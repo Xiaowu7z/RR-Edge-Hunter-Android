@@ -360,11 +360,11 @@ class MainActivity : Activity() {
                     appendLog("$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params))} MB")
                     val runResult = IpPipeline.runFamily(snapshot.host, family, candidates, params, strategy == "亚洲狩猎", { networkChanged.get() }, { state ->
                         val span = 92 / families.size; val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total
-                        setStage("$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}"); setProgress(idx * span + (f * span).toInt())
+                        setStage("$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}"); updateProgress(idx * span + (f * span).toInt())
                     }, { appendLog("  $it") })
                     invalid = invalid || runResult.invalid; all[family] = runResult.ranked; asia[family] = runResult.asiaRanked; popCounts[family] = runResult.popCounts
                 }
-                invalid = invalid || networkChanged.get(); setProgress(100); setStage("完成"); appendLog(if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
+                invalid = invalid || networkChanged.get(); updateProgress(100); setStage("完成"); appendLog(if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
                 saveHistory(all, families, invalid); unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null
                 runOnUiThread { showResults(all, asia, popCounts, families, invalid) }
             } catch (e: CancellationException) {
@@ -392,7 +392,7 @@ class MainActivity : Activity() {
         if (logQueue.isNotEmpty() && flushing.compareAndSet(false, true)) logHandler.postDelayed({ flushLogs() }, 180)
     }
     private fun setStage(value: String) = runOnUiThread { if (::stage.isInitialized) stage.text = value }
-    private fun setProgress(value: Int) = runOnUiThread { val safe = value.coerceIn(0, 100); progress.progress = safe; percent.text = "$safe%" }
+    private fun updateProgress(value: Int) = runOnUiThread { val safe = value.coerceIn(0, 100); progress.progress = safe; percent.text = "$safe%" }
 
     // ------------------------------------------ results / history
     private fun buildResult() {

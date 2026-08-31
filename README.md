@@ -1,12 +1,14 @@
 # RR Edge Hunter Android · CF 优选IP
 
-> 📱 **Android 独立版** · 💻 [RR Edge Hunter 电脑端](https://github.com/Xiaowu7z/RR-Edge-Hunter) · 💬 [RR-vps 官方交流频道](https://t.me/GMgP4NG7lncwZGE1)
+> 📱 **Android 独立版** · 💻 [电脑端 RR Edge Hunter](https://github.com/Xiaowu7z/RR-Edge-Hunter) · 💬 [RR-vps 官方交流频道](https://t.me/GMgP4NG7lncwZGE1)
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** 是 RR Edge Hunter 家族的 Android 本机 Argo 入口优选工具。用户填写现有 Argo 节点域名，应用从当前 DNS、Cloudflare 官方网段受控抽样和可选自定义 IP 池中筛选入口，输出可直接填入节点 `address/server` 的 IPv4 或 IPv6；原 Argo 域名继续作为 TLS SNI 与 HTTP Host。
+**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。默认不需要填写任何域名：应用把 `speed.cloudflare.com` 固定到每个候选 IP 的 `443` 端口，保留严格 TLS 证书、SNI、Host 与真实对端校验，再通过分层、多轮真实下载寻找更快、更稳定的入口。
 
-> 结果只代表本轮测试的设备、网络出口和时间。切换移动数据、Wi-Fi、运营商、VPN、代理或网络出口后，应重新测试。
+优选结果是一个裸 IPv4 或 IPv6。把它填入 VMess / VLESS 等节点的 `address` 或 `server` 字段即可；节点原来的端口、UUID、协议、TLS SNI、HTTP Host、WS Path 等参数全部保持不变。
+
+> 结果只代表本轮设备、网络出口、运营商和时间。切换 Wi-Fi、移动数据、VPN、代理或网络出口后应重新测试。
 
 ## 安装
 
@@ -14,98 +16,111 @@
 
 [⬇️ **点击下载安装最新版 CF 优选IP（推荐）**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk)
 
-这是一个通用 APK：点击下载，下载完成后按 Android 系统提示安装即可。无需选择 CPU 架构、Release 版本或任何高级选项。首次安装时，如系统询问，请允许你正在使用的浏览器安装应用。
+这是一个通用 APK，不需要选择 CPU 架构。下载完成后按 Android 系统提示安装；如系统询问，请允许当前浏览器安装应用。
 
 ### 测试通道
 
 [🧪 **手动下载当前测试包**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/download/testing/CF-IP-Optimizer-testing.apk)
 
-测试包与正式版暂时都保留版本号 **1.0.0**，因此自动更新工具不会把它识别为更高版本；需要手动下载并覆盖安装。测试通道使用相同的正式签名，但不会替换上面的正式版 `latest` 下载链接。
+测试包与正式版暂时都保留版本号 **1.0.0**，自动更新工具不会把它识别为更高版本；请手动下载并覆盖安装。测试通道使用相同正式签名，但不会替换正式版 `latest` 链接。
 
-### 自动更新（可选）
+### Obtainium 自动更新
 
-[🔄 **已安装 Obtainium？点击开启自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
+[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
 
-链接已预设仓库、应用名、作者和包名。点击后核对 **CF 优选IP** 并确认导入即可；不需要填写正则、CPU 架构、预发布、排序等选项。以后由 Obtainium 检查并下载正式版更新。
-
-<details>
-<summary>遇到问题再看：安装与校验</summary>
-
-若自动更新链接未打开，请先安装 [Obtainium 官方最新版](https://github.com/ImranR98/Obtainium/releases/latest)，然后在“添加应用”中只粘贴下面的仓库地址：
+打开后确认添加 **CF 优选IP**，无需设置正则、CPU 架构、预发布或排序选项。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”，其余选项保持默认：
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 ```
 
-每个正式版都提供 `CF-IP-Optimizer.apk.sha256` 校验文件；如需手动下载或校验，请查看 [全部 Releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases)。
+正式 Release 同时提供 `CF-IP-Optimizer.apk.sha256`。
 
-</details>
+## 一键默认值
 
-## 主要功能
+| 项目 | 默认值 |
+| --- | --- |
+| IP 协议 | IPv4 |
+| 期望带宽 | 100 Mbps |
+| 测速策略 | 亚洲狩猎 |
+| 测速身份 | `speed.cloudflare.com:443` |
+| 候选来源 | Cloudflare 官方池；可叠加用户导入的官方 IP |
+| 输出用途 | 只替换节点 `address/server` |
 
-- 保留运营商模式：自动、移动、电信、联通。
-- 保留 IP 协议族模式：IPv4、IPv6、双栈。
-- 保留均衡模式与亚洲狩猎模式；成功率和稳定速度始终优先，HKG、NRT、SIN、ICN、TPE 等 POP 只在同档成绩中加分。
-- 对候选 IP 进行 Pre、Micro、Full 分层测试，多轮复核成功率、延迟、TTFB、下载表现与波动；失败样本按 0 纳入排序。
-- 一键优选组合当前 DNS、Cloudflare 官方 CIDR 受控抽样和自定义 IP；另保留“当前 DNS 体检”辅助模式。
-- 自定义 IP 支持长复制、文件和 HTTPS 订阅，支持 IPv4、IPv6、CIDR、TXT、CSV、TSV、JSON 与 Base64。
-- 每个候选都先用 Argo 域名做 TLS/SNI/Host、证书和 `/cdn-cgi/trace` 验证；填写 WS Path 时还必须通过完整 WebSocket 101 握手。
-- 结果支持复制 IP 或完整填写摘要：地址/server、端口 443、SNI、Host 与 Path。
-- 保存最近 50 条本地历史记录。
+亚洲狩猎仍以成功率、复核底线、最低与平均吞吐和波动为主；HKG、NRT、SIN、ICN、TPE 等 POP 只在同档成绩中加分。
 
-应用仅申请联网与网络状态权限。文件导入使用 Android 系统文件选择器，不申请读取全部存储空间的权限。
+## 工作方式
 
-## IP 候选与测试边界
+1. 获取 `speed.cloudflare.com` 当前 DNS 种子，并加载 Cloudflare 官方 CIDR 的确定性受控抽样。
+2. 如用户导入名单，将其中属于 Cloudflare 官方网段的地址加入候选。
+3. 固定 `speed.cloudflare.com:443` 到每个候选 IP，保留系统证书、SNI、Host 和实际 TCP 对端验证。
+4. 执行 Pre 快筛、Micro 复核和多轮 Full 下载；失败轮次按 `0 Mbps` 纳入成功率和稳定性。
+5. 按复核底线、成功率、最低/平均吞吐、波动和 TTFB 排名，并标注是否达到设定带宽。
 
-IP 优选不是对互联网上任意地址的扫描。每轮任务先取得**用户有权使用的 Argo 域名**当前 DNS 快照，确认它由 Cloudflare 代理并取得可信种子。主模式还会加入 Cloudflare 官方公布 CIDR 的小量确定性抽样和用户导入池，但每协议族均有硬上限。
+默认流程测量当前手机网络到 Cloudflare 入口的质量，不需要 VPS 源站 IP，也不要求 Argo 域名。
 
-- 导入 IP 不要求出现在 Argo 域名当前 DNS 中，但必须属于 Cloudflare 官方 CIDR；非 Cloudflare 地址会被拒绝。
-- 当前 DNS、导入池和官方网段抽样最终仍受 IPv4 48 个、IPv6 24 个候选上限约束；长列表采用确定性分散抽样。
-- IPv4 与 IPv6 分别校验和统计；双栈模式不会把一个协议族的结果冒充为另一个协议族的结论。
-- 应用把 Argo 域名临时固定到每个候选 IP，但始终保留该域名的 SNI、Host 和系统 TLS 证书校验；不会关闭证书验证。
-- Argo 域名通常没有 `speed.cloudflare.com` 的 `/__down`，所以入口兼容验证使用 Argo 域名，同 IP 的分层吞吐测试使用 Cloudflare 公开测速主机。结果是入口筛选证据，不等同于绕过客户端实测。
-- 探测连接不继承系统 HTTP 代理，避免代理把实际 TCP 对端替换成其他地址；VPN 等网络出口变化仍会影响结果。
+## 自定义 IP 池
 
-应用不提供也不执行任意强制路由、`hosts` 修改、任何 DNS 记录写入、代理配置、端口扫描、漏洞探测、压力测试或绕过访问控制。
+高级设置支持：
 
-## 自定义 IP 导入
+- 长复制 IPv4、IPv6、`IP:443`、`[IPv6]:443` 和 CIDR；
+- TXT、CSV、TSV、JSON、Base64 文件；
+- HTTPS IP 订阅链接。
 
-展开“添加 / 管理 IP 池”后，可粘贴地址、导入本地文件或填写 IP 订阅链接。内容会统一规范化、按原顺序去重，并统计有效、忽略、IPv4、IPv6 和 CIDR 条目。
+导入 IP 不要求与 `speed.cloudflare.com` 当前 DNS 求交，但必须属于 Cloudflare 官方 CIDR。私网、回环、链路本地、保留地址、非 CF 地址和错误协议族会被拒绝或忽略；CIDR 抽样、候选量、并发和真实下载流量均有限制。文件选择使用 Android 系统选择器，不申请读取全部存储空间权限。
 
-为避免无意扩大测试范围，CIDR 展开、总候选量、单文件大小和订阅大小都受限。订阅仅允许 **HTTPS** 公网目标和默认 `443` 端口；每次跳转均重新校验目标，并固定到本次已验证的公网 IP。
+第三方非官方反代不会混入默认官方池。
 
-导入成功并不等于地址可测：地址还必须属于 Cloudflare 官方 CIDR、匹配所选协议族、通过 Argo 域名证书与真实远端校验，并在受控候选上限内入选。
+## 高级：Argo 兼容复核
+
+普通优选不需要域名。只有希望确认候选 IP 是否兼容自己的 Argo 节点时，才在高级设置中开启，并填写原节点域名、TLS 端口和可选 WS Path。
+
+开启后，候选除公共测速外还必须使用原域名完成证书、SNI、Host 与真实对端校验；填写 Path 时必须通过标准 WebSocket `101` 握手。它只是附加复核，最终仍只复制裸 IP，节点端口、UUID、SNI、Host 与 Path 不会被工具改写。
+
+## 可选：同步到 Cloudflare DNS
+
+结果页可以把冠军 IP 写入自己指定的 Cloudflare DNS 记录。此功能默认关闭，普通测速与复制 IP 不需要 Cloudflare 凭据。
+
+同步规则：
+
+- IPv4 只写 `A`，IPv6 只写 `AAAA`；
+- 强制使用 **DNS-only（灰云）**；
+- 必须填写 32 位 **Zone ID** 和完整记录名 **FQDN**，例如 `edge.example.com`；不会自动猜 Zone；
+- 只接受 Cloudflare API Token，不接受 Global API Key；最小权限为目标 Zone 的 **Zone / DNS / Edit**；
+- 第一步“生成只读预览”不会写入；第二步必须再次确认，写入后会回读验证；
+- 同名 CNAME、多个同类型记录或其他歧义会直接拒绝，不自动删除、合并或转换；
+- Token 不进入测速日志、历史、导出或错误文本。
+
+Android 默认只在当前应用会话内存中保留 Token。只有用户显式勾选“在本机安全保存 Token”时，才使用 Android Keystore 的 AES-GCM 加密保存；可随时从界面清除。Zone ID 和记录名可作为非秘密设置保留。
+
+DNS 同步是独立可选输出，不会改变 Argo 域名或节点的端口、UUID、SNI、Host 与 Path。
+
+## 安全与隐私
+
+- 应用只申请联网和网络状态权限。
+- 默认仅连接 Cloudflare 官方网段候选，探针不继承系统 HTTP 代理。
+- TLS 证书、SNI、Host 和实际远端验证始终启用。
+- HTTPS 订阅限制公网目标、大小和跳转，并防护 DNS rebinding。
+- API Token 不进入日志、历史和导出；持久保存必须由用户主动选择并由 Android Keystore 加密。
+- 不提供端口扫描、漏洞探测、压力测试、任意 hosts/路由修改、系统代理配置或访问控制绕过。
+
+详见 [SECURITY.md](SECURITY.md) 与 [NOTICE.md](NOTICE.md)。
 
 ## 构建与验证
 
-要求 JDK 17 与 Android SDK 34。仓库自带 Gradle Wrapper：
+要求 JDK 17 与 Android SDK 34：
 
 ```bash
 ./gradlew :logic-tests:check :app:lintDebug :app:assembleDebug
 ```
 
-也可以使用：
+也可以运行：
 
 ```bash
 ./test.sh
 ./build.sh
 ```
 
-`logic-tests` 运行不依赖公网状态的确定性 JVM 回归；真实 DNS、网络与取消时序测试应在受控环境或真机中单独执行。正式签名从仓库外注入，新证书占位、校验和 GitHub Actions 配置见 [RELEASE_SIGNING.md](RELEASE_SIGNING.md)。
+正式签名从仓库外注入，详见 [RELEASE_SIGNING.md](RELEASE_SIGNING.md)。当前版本保持 **1.0.0**。
 
-## 仓库结构
-
-```text
-app/           Android 应用源码与资源
-logic-tests/   可复现的确定性 JVM 回归任务
-test/          其余专项与网络环境测试
-gradle/        Gradle Wrapper
-```
-
-电脑端项目位于 [RR-Edge-Hunter](https://github.com/Xiaowu7z/RR-Edge-Hunter)。
-
-## 使用边界
-
-本项目仅用于为用户自有或获明确授权的 Argo 节点评估 Cloudflare 官方网段入口。请遵守所在地法律、网络提供商政策和相关服务条款。
-
-Cloudflare、Android 等名称与商标归各自权利人所有。本项目是非官方独立工具，与相关服务商不存在隶属、合作、赞助或背书关系。详见 [NOTICE.md](NOTICE.md)。
+Cloudflare、Android 等名称与商标归各自权利人所有；本项目是非官方独立工具。

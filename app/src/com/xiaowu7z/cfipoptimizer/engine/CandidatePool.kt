@@ -17,8 +17,9 @@ data class CandidatePoolSelection(
 )
 
 /**
- * Argo 优选候选池：当前 DNS 用作可信种子，导入地址不再与 DNS 求交；所有
- * 实际候选仍必须位于 Cloudflare 官方 CIDR，并受每协议族上限约束。
+ * Cloudflare 优选候选池：公开测速域名 DNS 用作就近种子，用户导入地址
+ * 无需与 DNS 求交；所有实际候选仍必须位于 Cloudflare 官方 CIDR，并受
+ * 每协议族上限约束。[snapshotSource] 只是结果来源标签，不放宽网段校验。
  */
 object CandidatePool {
     const val MAX_V4_CANDIDATES = 48
@@ -30,7 +31,8 @@ object CandidatePool {
         snapshot: AuthorizedHostSnapshot,
         imported: Collection<String>,
         family: String,
-        includeOfficialSamples: Boolean = true
+        includeOfficialSamples: Boolean = true,
+        snapshotSource: String = "当前DNS"
     ): CandidatePoolSelection {
         val familyLimit = if (family == "IPv6") MAX_V6_CANDIDATES else MAX_V4_CANDIDATES
         val selected = LinkedHashMap<String, CandidateSeed>()
@@ -41,7 +43,7 @@ object CandidatePool {
         snapshot.forFamily(family).forEach { raw ->
             val address = literal(raw) ?: return@forEach
             if (matchesFamily(address, family) && CfRanges.isCloudflare(address)) {
-                add(canonical(address), "当前DNS")
+                add(canonical(address), snapshotSource)
             }
         }
 
@@ -67,7 +69,9 @@ object CandidatePool {
         sampledImported.forEach { add(it, "用户IP池") }
 
         if (includeOfficialSamples) {
-            val perRange = if (family == "IPv6") 2 else 2
+            // Android 不展开大网段。每个公布网段取 3 个确定性分位点，
+            // 在 IPv4 48 / IPv6 24 总上限内尽量覆盖不同 anycast 入口。
+            val perRange = 3
             CfRanges.sampleOfficial(family, perRange, familyLimit).forEach { add(it, "CF官方网段抽样") }
         }
 

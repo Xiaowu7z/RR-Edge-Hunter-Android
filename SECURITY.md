@@ -1,24 +1,41 @@
-# 安全说明
+# 安全说明 / Security Policy
 
-请勿在 Issue、截图、日志、域名/IP 导入文件或订阅链接中公开个人网络信息、签名材料、节点配置或其他敏感数据。安全问题请通过 [RR-vps 官方交流频道](https://t.me/GMgP4NG7lncwZGE1) 与维护者联系，并先隐藏敏感信息。
+请勿在公开 Issue、截图、日志、域名/IP 导入文件或订阅链接中公开 Cloudflare API Token、Zone ID 与域名组合、节点链接或个人网络信息。安全问题请使用 GitHub Private Vulnerability Reporting，或通过仓库列出的项目频道联系维护者。
 
-## 测试授权与目标约束
+## 测速边界
 
-本项目只接受对用户自有或明确获授权 Argo 节点的测试。每次任务必须先取得节点域名的当前 DNS 快照，确认它由 Cloudflare 代理并取得可信种子。Argo 优选模式可另外测试 Cloudflare 官方 CIDR 的受控抽样和用户导入候选。
+- 默认模式不需要用户域名，固定使用 `speed.cloudflare.com:443` 对 Cloudflare 官方网段候选执行 HTTPS 测量。
+- 导入 IP 不必与当前 DNS 求交，但必须属于 Cloudflare 官方 CIDR；非 CF、私网、回环、链路本地、保留地址和错误协议族会被拒绝。
+- 候选量、CIDR 抽样、并发、超时和下载流量均有硬上限。
+- TLS 证书、SNI、Host 与实际 TCP 对端验证不会关闭；探针不继承系统 HTTP 代理。
+- Argo 域名、节点端口和 WS Path 只在用户显式开启高级兼容复核时使用。最终仍只输出裸 IP，节点原端口、UUID、SNI、Host 与 Path 不变。
 
-- 自定义 IP、CIDR、文件和订阅无需与当前 DNS 求交，但必须属于 Cloudflare 官方 CIDR；非 Cloudflare 地址和无效协议族地址必须被拒绝。
-- 每协议族候选数量、CIDR 抽样、并发和分层下载流量均有硬上限；探针入口会再次执行官方范围校验。
-- 固定候选 IP 时必须继续使用用户 Argo 域名作为 SNI/Host，并保留系统 TLS 证书验证与真实 TCP 对端校验；不得关闭或绕开验证。
-- 可选 WS Path 只有在随机 Key 的完整 HTTP 101、Upgrade、Connection 与 `Sec-WebSocket-Accept` 校验全部通过时才算兼容。
-- 不接收任意强制路由、`hosts` 修改、任何 DNS 记录写入、代理、端口扫描、漏洞探测、压力测试或绕过访问控制相关功能请求。
-- Android 端没有 DNS 凭据输入、存储或记录写入功能；优选结果只用于复制到 Argo 节点的 `address/server`，域名、SNI、Host 与 Path 保持原节点配置。
+## 导入与本地数据
 
-## 订阅与导入
+- 文件使用 Android 系统文件选择器，不申请读取全部存储空间权限。
+- HTTPS 订阅仅接受公网目标、默认 443、有限跳转和有限响应大小，并逐跳重新验证，降低 SSRF 与 DNS rebinding 风险。
+- 测速历史保存在应用本地；网络出口在测试中变化会使本轮结果作废。
 
-订阅仅接受 HTTPS、公网目标、默认 443 端口及受限大小的文本内容。每次重定向都必须重新校验目标地址，并固定到本次校验通过的公网 IP，以降低 SSRF 和 DNS rebinding 风险。
+## Cloudflare DNS 同步
+
+DNS 写入默认关闭，必须由用户在结果页主动开启：
+
+- 只允许将优选出的官方 CF IPv4 写入 `A`，或 IPv6 写入 `AAAA`；强制 DNS-only（灰云）。
+- 32 位 Zone ID 和完整记录 FQDN 必填；不会自动猜测 Zone。
+- 只接受目标 Zone **Zone / DNS / Edit** 最小权限的 API Token，不接受 Global API Key。
+- 写入采用“只读预览 → 用户明确确认 → 写入后回读验证”。预览后状态变化必须重新预览。
+- 同名 CNAME、多个同类型记录或其他歧义状态一律拒绝；不会自动删除、合并或转换记录。
+- Token 不进入测速日志、历史、导出、异常文本或崩溃信息。
+- Token 默认只存在当前会话内存。只有用户显式勾选保存时，才使用 Android Keystore 管理的 AES-GCM 密钥加密持久化；用户可以随时清除。
 
 ## 正式签名
 
-正式签名私钥只能保存在维护者控制的安全位置或 GitHub Actions Secrets 中。发布任务必须校验应用包名、版本标签、单调递增的 `versionCode`、v1/v2/v3 签名方案，以及与配置的新正式证书 SHA-256 指纹一致性。证书指纹、包名或 `versionCode` 不符合预期时必须阻止发布。详见 [RELEASE_SIGNING.md](RELEASE_SIGNING.md)。
+正式签名私钥只能保存在维护者控制的安全位置或 GitHub Actions Secrets 中。发布任务必须校验包名、版本、签名方案和证书指纹。详见 [RELEASE_SIGNING.md](RELEASE_SIGNING.md)。
 
-正式签名 Secrets 必须只存放于 GitHub 的 `android-release` 环境，并要求人工审批；`main` 与 `v*` 发布标签应启用保护规则，禁止强推和覆盖。
+## 不支持的用途
+
+本项目不提供端口扫描、漏洞探测、压力测试、任意 hosts/路由修改、代理服务、凭据收集或访问控制绕过。
+
+---
+
+The default Android scan pins `speed.cloudflare.com:443` to bounded official-Cloudflare candidates and needs no user hostname. Optional Argo validation and DNS synchronization require explicit activation. DNS tokens are session-only by default, excluded from logs/history/exports, and persisted only through an explicit Android Keystore-backed choice.

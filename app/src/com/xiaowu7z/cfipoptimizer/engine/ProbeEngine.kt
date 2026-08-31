@@ -130,6 +130,7 @@ object ProbeEngine {
         timeoutSec: Int,
         testHost: String = SPEED_HOST,
         includeTrace: Boolean = true,
+        targetPort: Int = 443,
         log: (String) -> Unit
     ): ProbeResult {
         if (verifiedCloudflareTarget(targetIp) == null) {
@@ -143,7 +144,11 @@ object ProbeEngine {
         var timing: ProbeTimingListener.Timings? = null
 
         val client = newColdClient(host, targetIp, timeoutSec, events, { timing = it })
-        val url = "https://$host/__down?bytes=$bytes"
+        if (targetPort !in 1..65535) {
+            return ProbeResult(ok = false, error = "端口无效", targetIp = targetIp)
+        }
+        val authority = httpsAuthority(host, targetPort)
+        val url = "https://$authority/__down?bytes=$bytes"
         val req = Request.Builder().url(url).get().build()
         val call = client.newCall(req)
 
@@ -165,7 +170,7 @@ object ProbeEngine {
                     val enoughBody = bytes <= 0L || bodyBytes >= (bytes * 0.8).toLong()
                     val (colo, loc) = if (includeTrace && resp.isSuccessful && enoughBody) {
                         try {
-                            val traceCall = newTraceCall(host, targetIp, timeoutSec, events)
+                            val traceCall = newTraceCall(host, targetIp, targetPort, timeoutSec, events)
                             activeCalls.add(traceCall)
                             executeTrace(traceCall, events)
                         } catch (e: Exception) {
@@ -208,6 +213,7 @@ object ProbeEngine {
         targetIp: String,
         argoHost: String,
         wsPath: String = "",
+        targetPort: Int = 443,
         timeoutSec: Int = 8,
         log: (String) -> Unit = {}
     ): ArgoRouteResult {
@@ -221,12 +227,16 @@ object ProbeEngine {
                 wsPath = wsPath
             )
         val host = argoHost.trim().lowercase(Locale.ROOT)
+        if (targetPort !in 1..65535) {
+            return ArgoRouteResult(ok = false, error = "端口无效", targetIp = targetIp, sni = host, hostHeader = host, wsPath = wsPath)
+        }
+        val authority = httpsAuthority(host, targetPort)
         val events = StringBuilder()
         var traceTiming: ProbeTimingListener.Timings? = null
         val traceClient = newColdClient(host, targetIp, timeoutSec, events, { traceTiming = it })
         val traceCall = traceClient.newCall(
             Request.Builder()
-                .url("https://$host/cdn-cgi/trace")
+                .url("https://$authority/cdn-cgi/trace")
                 .header("Cache-Control", "no-store")
                 .get()
                 .build()
@@ -272,7 +282,7 @@ object ProbeEngine {
                     val wsClient = newColdClient(host, targetIp, timeoutSec, events, {}, { wsRemoteAddress = it })
                     val wsCall = wsClient.newCall(
                         Request.Builder()
-                            .url("https://$host$wsPath")
+                            .url("https://$authority$wsPath")
                             .header("Connection", "Upgrade")
                             .header("Upgrade", "websocket")
                             .header("Sec-WebSocket-Version", "13")
@@ -354,12 +364,13 @@ object ProbeEngine {
         targetIp: String,
         timeoutSec: Int,
         testHost: String = SPEED_HOST,
+        targetPort: Int = 443,
         log: (String) -> Unit
     ): Pair<String, String> {
         if (verifiedCloudflareTarget(targetIp) == null) return Pair("", "")
         val events = StringBuilder()
         val host = testHost.trim().lowercase(Locale.ROOT)
-        val call = newTraceCall(host, targetIp, timeoutSec, events)
+        val call = newTraceCall(host, targetIp, targetPort, timeoutSec, events)
         return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation {
                 call.cancel()
@@ -380,13 +391,17 @@ object ProbeEngine {
     private fun newTraceCall(
         testHost: String,
         targetIp: String,
+        targetPort: Int,
         timeoutSec: Int,
         events: StringBuilder
     ): okhttp3.Call {
         val client = newColdClient(testHost, targetIp, timeoutSec, events, {})
-        val req = Request.Builder().url("https://$testHost/cdn-cgi/trace").get().build()
+        val req = Request.Builder().url("https://${httpsAuthority(testHost, targetPort)}/cdn-cgi/trace").get().build()
         return client.newCall(req)
     }
+
+    private fun httpsAuthority(host: String, port: Int): String =
+        if (port == 443) host else "$host:$port"
 
     private fun verifiedCloudflareTarget(value: String): InetAddress? {
         if (!isIpLiteral(value)) return null

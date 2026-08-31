@@ -16,6 +16,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -28,6 +29,7 @@ import com.xiaowu7z.cfipoptimizer.engine.CandidatePool
 import com.xiaowu7z.cfipoptimizer.engine.CfRanges
 import com.xiaowu7z.cfipoptimizer.engine.IpMetric
 import com.xiaowu7z.cfipoptimizer.engine.IpPipeline
+import com.xiaowu7z.cfipoptimizer.engine.ProbeEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,14 +40,20 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * CF 优选IP ranks Cloudflare entry addresses for an existing Argo node. The
- * selected IP is used only as the node address/server; TLS SNI, HTTP Host and
- * certificate verification always remain bound to the user's Argo hostname.
+ * CF 优选IP ranks Cloudflare edge addresses from the current Android network.
+ * The normal flow needs no hostname: users copy the winning literal IP into a
+ * VMess/VLESS node's address/server field and leave every other node field as-is.
  */
 class MainActivity : Activity() {
     companion object { private const val REQUEST_OPEN_IP_FILE = 711 }
+
+    private class RunLease(val generation: Long) {
+        var job: Job? = null
+        var unregisterWatcher: (() -> Unit)? = null
+    }
 
     // RR Edge Atlas dark / violet visual system.
     private val bg = Color.parseColor("#060811")
@@ -69,6 +77,9 @@ class MainActivity : Activity() {
     private lateinit var protocolSummary: TextView
     private lateinit var testHost: EditText
     private lateinit var wsPathInput: EditText
+    private lateinit var argoPortInput: EditText
+    private lateinit var expectedBandwidthInput: EditText
+    private lateinit var advancedPanel: LinearLayout
     private lateinit var customPanel: LinearLayout
     private lateinit var customIpsInput: EditText
     private lateinit var subscriptionInput: EditText
@@ -81,13 +92,17 @@ class MainActivity : Activity() {
     private lateinit var results: LinearLayout
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val runStateLock = Any()
+    private val runGeneration = AtomicLong(0L)
     private var runningJob: Job? = null
+    private var activeRun: RunLease? = null
     private var currentPage = "home"
     private var unregisterNetworkWatch: (() -> Unit)? = null
-    private var protocol = "双栈"
-    private var strategy = "均衡"
+    private var protocol = "IPv4"
+    private var strategy = "亚洲狩猎"
     private var operatorLabel = "自动"
-    private var source = "Argo优选"
+    private var advancedValidation = false
+    private var sessionCloudflareToken: CloudflareApiToken? = null
     private var importedIps: List<String> = emptyList()
     private var importDescription = "尚未导入"
     private var appliedInput = ""
@@ -170,39 +185,70 @@ class MainActivity : Activity() {
             addView(label("CF 优选IP", 25f, primary, true)); addView(label("RR Edge Hunter · Android 1.0.0", 12f, muted))
         })
         root.addView(brand)
-        root.addView(label("为现有 Argo 节点寻找更稳定的 Cloudflare 入口 IP。IP 填入节点地址/server，原域名继续作为 SNI 与 Host。", 12f, secondary).apply { setPadding(0, dp(14), 0, dp(8)) })
+        root.addView(label("一键找到当前网络更快、更稳定的 Cloudflare 入口 IP。复制 IP 到 VMess / VLESS 节点的 address/server，其他参数全部保持原样。", 12f, secondary).apply { setPadding(0, dp(14), 0, dp(8)) })
         status = label("", 12f, muted); root.addView(status)
 
         root.addPanel(12) {
-            addView(heading("Argo 节点 · 必填"))
-            addView(label("填写节点正在使用的 Cloudflare / Argo 域名，不要填写源站 IP、URL 或端口。", 11.5f, secondary))
-            testHost = input("例如 argo.example.com").apply { setSingleLine(true) }
-            addView(testHost, lp(10))
-            wsPathInput = input("WS Path（可选），例如 /vless?ed=2048").apply { setSingleLine(true) }
-            addView(wsPathInput, lp(8))
-            addView(label("留空时只验证 TLS、SNI、Host 与 Cloudflare 入口；填写后会额外执行严格 WebSocket 101 握手。", 11f, muted).apply { setPadding(0, dp(7), 0, 0) })
-            addView(segmented(listOf("Argo优选", "当前DNS"), listOf("一键优选（推荐）", "当前 DNS 体检"), "Argo优选") {
-                source = it; customPanel.visibility = View.GONE; refreshStatus()
-            }, lp(12))
-            addView(label("一键优选会组合当前 DNS、CF 官方网段受控抽样与已导入 IP 池；当前 DNS 体检只检查域名现有入口。", 11f, warn).apply { setPadding(0, dp(7), 0, 0) })
-            addView(label("点击开始即表示你确认有权使用并测试该 Argo 节点。", 10.5f, muted).apply { setPadding(0, dp(7), 0, 0) })
-        }
-
-        root.addPanel(12) {
-            addView(heading("协议族与测速策略"))
+            addView(heading("一键扫描配置"))
             protocolSummary = label("", 12f, secondary); addView(protocolSummary)
-            addView(segmented(listOf("IPv4", "IPv6", "双栈"), initial = "双栈") { protocol = it; refreshStatus() })
-            addView(heading("测速策略").apply { setPadding(0, dp(16), 0, dp(8)) })
-            addView(segmented(listOf("均衡", "亚洲狩猎"), initial = "均衡") { strategy = it; refreshStatus() })
+            addView(heading("IP 协议").apply { setPadding(0, dp(12), 0, dp(8)) })
+            addView(segmented(listOf("IPv4", "IPv6", "双栈"), initial = "IPv4") { protocol = it; refreshStatus() })
+            addView(heading("期望带宽（Mbps）").apply { setPadding(0, dp(16), 0, dp(8)) })
+            expectedBandwidthInput = input("例如 100").apply {
+                setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("100")
+            }
+            addView(expectedBandwidthInput)
+            addView(label("用于决定 Full 测速样本大小和达标标记；数值越高，会消耗更多流量。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("连接验证：TLS 严格校验 ✓ · 公开测速端口 443", 11.5f, good, true).apply { setPadding(0, dp(12), 0, 0) })
+        }
+        root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
+        root.addView(secondaryButton("历史记录") { showHistory() }, lp(8))
+
+        val advancedSettings = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        root.addView(secondaryButton("高级设置（策略、运营商、IP 池、Argo 复核）") {
+            advancedSettings.visibility = if (advancedSettings.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }, lp(8))
+        root.addView(advancedSettings)
+
+        advancedSettings.addPanel(12) {
+            addView(heading("测速策略"))
+            addView(segmented(listOf("均衡", "亚洲狩猎"), initial = "亚洲狩猎") { strategy = it; refreshStatus() })
             addView(label("亚洲狩猎仍以成功率与稳定速度为主，POP 只在同档成绩中加分，不会让慢速 HKG 压过高速入口。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(heading("线路标签").apply { setPadding(0, dp(16), 0, dp(8)) })
             addView(segmented(listOf("自动", "中国移动", "中国电信", "中国联通"), listOf("自动", "移动", "电信", "联通"), "自动") { operatorLabel = it; refreshStatus() })
             addView(label("标签用于历史和对比；不会模拟运营商网络或改变 IP 池。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("测速固定使用 speed.cloudflare.com + TLS 443；这不会覆盖你节点原来的 2053 / 8443 等端口。", 11f, good).apply { setPadding(0, dp(10), 0, 0) })
         }
 
-        root.addPanel(12) {
+        advancedSettings.addPanel(12) {
+            addView(heading("高级：按我的 Argo 节点复核（可选）"))
+            addView(label("默认关闭，不需要域名也能优选 IP。只有你想确认某个 IP 是否真能接入自己的 SNI / Host / WS Path 时才开启。", 11.5f, muted))
+            addView(segmented(listOf("关闭", "开启"), listOf("关闭（默认）", "开启复核"), "关闭") {
+                advancedValidation = it == "开启"
+                advancedPanel.visibility = if (advancedValidation) View.VISIBLE else View.GONE
+                refreshStatus()
+            }, lp(10))
+            advancedPanel = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL; visibility = View.GONE
+                testHost = input("原节点 TLS SNI / WS Host 域名").apply { setSingleLine(true) }
+                addView(testHost, lp(10))
+                argoPortInput = input("原节点 HTTPS 端口，默认 443").apply {
+                    setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("443")
+                }
+                addView(argoPortInput, lp(8))
+                wsPathInput = input("WS Path（可选），例如 /vless?ed=2048").apply { setSingleLine(true) }
+                addView(wsPathInput, lp(8))
+                addView(label("复核会用原节点端口校验 TLS/SNI/Host；填写 Path 时还必须通过 WebSocket 101。", 11f, warn).apply { setPadding(0, dp(7), 0, 0) })
+            }
+            addView(advancedPanel)
+        }
+
+        advancedSettings.addPanel(12) {
             addView(heading("自定义 IP 池 · 可选"))
-            addView(label("无需导入即可测试。也可长复制、上传文件或订阅社区 IP 池；只有 Cloudflare 官方 CIDR 内的地址会进入候选。", 11.5f, muted))
+            addView(label("无需导入：默认已包含公开测速域名 DNS 种子和 Cloudflare 官方 CIDR 分散抽样。也可长复制、上传文件或订阅 IP 池。", 11.5f, muted))
             customPanel = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE
                 customIpsInput = input("粘贴 IPv4 / IPv6 / IP:443 / CIDR；支持长复制", true); addView(customIpsInput, lp(12))
                 addView(primaryButton("应用粘贴内容") { applyManualIps(true) }, lp(8))
@@ -220,29 +266,27 @@ class MainActivity : Activity() {
             addView(customPanel)
         }
 
-        root.addPanel(12) {
+        advancedSettings.addPanel(12) {
             addView(heading("安全边界"))
             addView(label("• 候选仅限 Cloudflare 官方网段，并受总量、并发和流量上限约束。", 12f, secondary))
-            addView(label("• 每个候选都固定 IP 连接，但证书、TLS SNI 与 HTTP Host 始终使用你的 Argo 域名。", 12f, secondary))
-            addView(label("• 工具只输出节点填写参数，不改 DNS、hosts、路由或系统代理。", 12f, secondary))
+            addView(label("• 默认只测 speed.cloudflare.com，不要求你提供节点域名或源站 IP。", 12f, secondary))
+            addView(label("• 默认只复制裸 IP，不改 hosts、路由或系统代理。DNS 同步必须在结果页二次确认。", 12f, secondary))
         }
-        root.addView(primaryButton("一键寻找 Argo 最优入口") { preflightAndStart() }, lp(16))
-        root.addView(secondaryButton("历史记录") { showHistory() }, lp(8))
     }
 
     private fun effectiveOperator(info: NetEnv.NetInfo) = if (operatorLabel == "自动") info.carrier.ifBlank { "自动" } else operatorLabel
     private fun refreshStatus() {
         if (!::status.isInitialized) return
         val info = NetEnv.detect(this)
-        val sourceText = if (source == "当前DNS") "当前 DNS 体检" else "自动池${if (importedIps.isNotEmpty()) " + 导入 ${importedIps.size}" else ""}"
-        status.text = "${info.label} · 线路：${effectiveOperator(info)} · 候选：$sourceText"
-        protocolSummary.text = "$protocol · $strategy"
+        val pool = "CF 官方池${if (importedIps.isNotEmpty()) " + 导入 ${importedIps.size}" else ""}"
+        status.text = "${info.label} · 线路：${effectiveOperator(info)} · 候选：$pool"
+        protocolSummary.text = "$protocol · $strategy${if (advancedValidation) " · 高级复核" else ""}"
     }
     private fun refreshImportStatus(error: String? = null) {
         if (!::importStatus.isInitialized) return
         when {
             error != null -> { importStatus.text = error; importStatus.setTextColor(bad) }
-            importedIps.isEmpty() -> { importStatus.text = "尚未导入；一键优选仍会使用当前 DNS 与 CF 官方受控抽样。"; importStatus.setTextColor(muted) }
+            importedIps.isEmpty() -> { importStatus.text = "尚未导入；一键优选仍会使用公开测速域名 DNS 种子与 CF 官方受控抽样。"; importStatus.setTextColor(muted) }
             else -> { importStatus.text = "已导入 ${importedIps.size} 个 IP · $importDescription"; importStatus.setTextColor(good) }
         }
     }
@@ -267,10 +311,6 @@ class MainActivity : Activity() {
             parsed.warnings.firstOrNull()?.let { append(" · $it") }
         }
         appliedInput = importedIps.joinToString("\n"); customIpsInput.setText(appliedInput); customIpsInput.setSelection(0)
-        // Keep the visible source selector authoritative.  An asynchronous file
-        // picker may return after the user has switched back to current DNS; in
-        // that case the import remains available but must not silently change
-        // the active test mode behind the selected UI state.
         refreshImportStatus(); refreshStatus()
     }
     private fun openIpFilePicker() {
@@ -329,67 +369,219 @@ class MainActivity : Activity() {
         root.addView(heading("实时日志").apply { setPadding(0, dp(20), 0, dp(6)) })
         logs = label("", 11f, secondary).apply { typeface = Typeface.MONOSPACE; setPadding(dp(12), dp(12), dp(12), dp(12)); background = shape(Color.parseColor("#090D17"), 12, stroke) }
         root.addView(ScrollView(this).apply { addView(logs) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        root.addView(secondaryButton("停止本次测试") { runningJob?.cancel() }, lp(14))
+        root.addView(secondaryButton("停止本次测试") { cancelActiveRun() }, lp(14))
     }
     private fun preflightAndStart() {
-        if (source == "Argo优选" && customIpsInput.text?.toString().orEmpty().isNotBlank() && !applyManualIps(true)) return
+        if (customIpsInput.text?.toString().orEmpty().isNotBlank() && !applyManualIps(true)) return
         val info = NetEnv.detect(this)
         if (info.vpnActive) showConfirm("检测到 VPN。结果将代表 VPN 出口网络，是否继续？") { launchRun(info) } else launchRun(info)
     }
+
+    /** Replaces the active run before cancelling its resources, so stale cleanup cannot own the new run. */
+    private fun beginRunLease(): RunLease {
+        val lease = RunLease(runGeneration.incrementAndGet())
+        var previousJob: Job? = null
+        var previousWatcher: (() -> Unit)? = null
+        synchronized(runStateLock) {
+            previousJob = runningJob
+            previousWatcher = unregisterNetworkWatch
+            activeRun = lease
+            runningJob = null
+            unregisterNetworkWatch = null
+        }
+        previousJob?.cancel()
+        previousWatcher?.invoke()
+        return lease
+    }
+
+    private fun isCurrentRun(lease: RunLease): Boolean = synchronized(runStateLock) {
+        activeRun === lease && runGeneration.get() == lease.generation
+    }
+
+    private fun attachRunWatcher(lease: RunLease, watcher: () -> Unit) {
+        val accepted = synchronized(runStateLock) {
+            if (activeRun === lease && runGeneration.get() == lease.generation) {
+                lease.unregisterWatcher = watcher
+                unregisterNetworkWatch = watcher
+                true
+            } else false
+        }
+        if (!accepted) watcher()
+    }
+
+    private fun attachRunJob(lease: RunLease, job: Job) {
+        val accepted = synchronized(runStateLock) {
+            if (activeRun === lease && runGeneration.get() == lease.generation) {
+                lease.job = job
+                runningJob = job
+                true
+            } else false
+        }
+        if (!accepted) job.cancel()
+    }
+
+    private fun cancelRunIfCurrent(lease: RunLease) {
+        val job = synchronized(runStateLock) {
+            if (activeRun === lease && runGeneration.get() == lease.generation) lease.job else null
+        }
+        job?.cancel()
+    }
+
+    private fun cancelActiveRun(abandonOutcome: Boolean = false) {
+        var job: Job? = null
+        var watcher: (() -> Unit)? = null
+        synchronized(runStateLock) {
+            val lease = activeRun?.takeIf { runGeneration.get() == it.generation }
+            job = lease?.job
+            if (abandonOutcome) {
+                // Back means the user has left this run. Invalidate even when
+                // the worker just released its lease but its UI post is queued.
+                runGeneration.incrementAndGet()
+                activeRun = null
+                runningJob = null
+                watcher = lease?.unregisterWatcher ?: unregisterNetworkWatch
+                lease?.unregisterWatcher = null
+                unregisterNetworkWatch = null
+            }
+        }
+        job?.cancel()
+        watcher?.invoke()
+    }
+
+    /** Releases only this exact run. Returns false when a newer run already owns the UI/resources. */
+    private fun releaseRun(lease: RunLease): Boolean {
+        var watcher: (() -> Unit)? = null
+        val released = synchronized(runStateLock) {
+            if (activeRun !== lease || runGeneration.get() != lease.generation) {
+                false
+            } else {
+                activeRun = null
+                watcher = lease.unregisterWatcher
+                lease.unregisterWatcher = null
+                if (unregisterNetworkWatch === watcher) unregisterNetworkWatch = null
+                if (runningJob === lease.job) runningJob = null
+                true
+            }
+        }
+        if (released) watcher?.invoke()
+        return released
+    }
+
+    /** A completed run may publish its final page only if no newer generation has started. */
+    private fun isLatestRunOutcome(lease: RunLease): Boolean = synchronized(runStateLock) {
+        activeRun == null && runGeneration.get() == lease.generation
+    }
+
     private fun launchRun(network: NetEnv.NetInfo) {
-        val host = try { AuthorizedHost.normalizeHost(testHost.text?.toString().orEmpty()) } catch (e: Exception) {
+        val expectedMbps = expectedBandwidthInput.text?.toString()?.trim()?.toIntOrNull()
+        if (expectedMbps == null || expectedMbps !in 1..2_000) {
+            Toast.makeText(this, "期望带宽请填写 1–2000 Mbps", Toast.LENGTH_LONG).show(); return
+        }
+        val host = if (advancedValidation) try {
+            AuthorizedHost.normalizeHost(testHost.text?.toString().orEmpty())
+        } catch (e: Exception) {
             Toast.makeText(this, e.message ?: "Argo 域名无效", Toast.LENGTH_LONG).show(); return
-        }
-        val wsPath = try { AuthorizedHost.normalizeWsPath(wsPathInput.text?.toString().orEmpty()) } catch (e: Exception) {
+        } else ""
+        val wsPath = if (advancedValidation) try {
+            AuthorizedHost.normalizeWsPath(wsPathInput.text?.toString().orEmpty())
+        } catch (e: Exception) {
             Toast.makeText(this, e.message ?: "WS Path 无效", Toast.LENGTH_LONG).show(); return
+        } else ""
+        val parsedArgoPort = if (advancedValidation) argoPortInput.text?.toString()?.trim()?.toIntOrNull() else 443
+        if (advancedValidation && parsedArgoPort !in setOf(443, 2053, 2083, 2087, 2096, 8443)) {
+            Toast.makeText(this, "高级复核仅支持 Cloudflare HTTPS 端口：443/2053/2083/2087/2096/8443", Toast.LENGTH_LONG).show(); return
         }
+        val argoPort = parsedArgoPort ?: 443
         val families = when (protocol) { "IPv4" -> listOf("IPv4"); "IPv6" -> listOf("IPv6"); else -> listOf("IPv4", "IPv6") }.filterNot { it == "IPv6" && !network.ipv6Available }
         if (families.isEmpty()) { Toast.makeText(this, "所选协议族没有可用链路", Toast.LENGTH_LONG).show(); return }
-        val params = if (strategy == "亚洲狩猎") IpPipeline.ASIA_HUNT else IpPipeline.BALANCED
-        runningJob?.cancel(); logQueue.clear(); logLines.clear(); logs.text = ""; progress.progress = 0; percent.text = "0%"; switchTo(run, "run")
+        val baseParams = if (strategy == "亚洲狩猎") IpPipeline.ASIA_HUNT else IpPipeline.BALANCED
+        val params = IpPipeline.forExpectedMbps(baseParams, expectedMbps)
+        val lease = beginRunLease()
+        logQueue.clear(); logLines.clear(); logs.text = ""; progress.progress = 0; percent.text = "0%"; switchTo(run, "run")
         val networkChanged = AtomicBoolean(false)
-        unregisterNetworkWatch?.invoke()
-        unregisterNetworkWatch = NetEnv.watchChanges(this, NetEnv.fingerprint(this)) { before, after -> networkChanged.set(true); appendLog("!! 网络变化（$before → $after），已取消"); runningJob?.cancel() }
-        runningJob = scope.launch {
+        val watcher = NetEnv.watchChanges(this, NetEnv.fingerprint(this)) { before, after ->
+            networkChanged.set(true)
+            if (isCurrentRun(lease)) {
+                appendLog("!! 网络变化（$before → $after），已取消")
+                cancelRunIfCurrent(lease)
+            }
+        }
+        attachRunWatcher(lease, watcher)
+        val job = scope.launch {
             try {
-                appendLog("=== $strategy / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
-                appendLog("Argo 域名：$host；WS Path=${wsPath.ifBlank { "未填写" }}；模式=$source")
-                setStage("刷新 Cloudflare 网段"); CfRanges.refresh()
-                appendLog("Cloudflare 网段：IPv4=${if (CfRanges.v4FromOnline) "在线" else "内置备用"} / IPv6=${if (CfRanges.v6FromOnline) "在线" else "内置备用"}")
-                setStage("建立授权 DNS 快照")
-                val snapshot = AuthorizedHost.snapshot(host) { appendLog(it) }
+                appendRunLog(lease, "=== $strategy / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
+                appendRunLog(lease, "主模式：公开测速主机 ${ProbeEngine.SPEED_HOST}:443 · 目标 ${expectedMbps} Mbps")
+                if (advancedValidation) appendRunLog(lease, "高级复核：$host:$argoPort；WS Path=${wsPath.ifBlank { "未填写" }}")
+                setStage(lease, "刷新 Cloudflare 网段"); CfRanges.refresh()
+                if (!isCurrentRun(lease)) return@launch
+                appendRunLog(lease, "Cloudflare 网段：IPv4=${if (CfRanges.v4FromOnline) "在线" else "内置备用"} / IPv6=${if (CfRanges.v6FromOnline) "在线" else "内置备用"}")
+                setStage(lease, "获取公开测速 DNS 种子")
+                val speedSnapshot = try {
+                    AuthorizedHost.snapshot(ProbeEngine.SPEED_HOST) { appendRunLog(lease, it.replace("授权 DNS", "测速域名 DNS")) }
+                } catch (e: Exception) {
+                    appendRunLog(lease, "公开测速 DNS 种子获取失败，继续使用 CF 官方网段抽样")
+                    AuthorizedHostSnapshot(ProbeEngine.SPEED_HOST, emptyList(), emptyList())
+                }
+                if (!isCurrentRun(lease)) return@launch
+                if (advancedValidation) {
+                    setStage(lease, "检查高级复核域名")
+                    AuthorizedHost.snapshot(host) { appendRunLog(lease, it) }
+                }
+                if (!isCurrentRun(lease)) return@launch
                 val all = LinkedHashMap<String, List<IpMetric>>(); val asia = LinkedHashMap<String, List<IpMetric>>(); val popCounts = LinkedHashMap<String, Map<String, Int>>()
                 var invalid = false
                 families.forEachIndexed { idx, family ->
-                    val candidates = selectCandidates(snapshot, family)
-                    if (candidates.isEmpty()) { appendLog("$family 无安全候选，跳过"); all[family] = emptyList(); asia[family] = emptyList(); popCounts[family] = emptyMap(); return@forEachIndexed }
-                    appendLog("$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params))} MB")
-                    val runResult = IpPipeline.runFamily(snapshot.host, wsPath, family, candidates, params, strategy == "亚洲狩猎", { networkChanged.get() }, { state ->
+                    if (!isCurrentRun(lease)) return@launch
+                    val candidates = selectCandidates(speedSnapshot, family, lease)
+                    if (candidates.isEmpty()) { appendRunLog(lease, "$family 无安全候选，跳过"); all[family] = emptyList(); asia[family] = emptyList(); popCounts[family] = emptyMap(); return@forEachIndexed }
+                    appendRunLog(lease, "$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params))} MB")
+                    val runResult = IpPipeline.runFamily(host, wsPath, family, candidates, params, strategy == "亚洲狩猎", argoPort, { networkChanged.get() }, { state ->
                         val span = 92 / families.size; val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total
-                        setStage("$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}"); updateProgress(idx * span + (f * span).toInt())
-                    }, { appendLog("  $it") })
+                        setStage(lease, "$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}"); updateProgress(lease, idx * span + (f * span).toInt())
+                    }, { appendRunLog(lease, "  $it") })
+                    if (!isCurrentRun(lease)) return@launch
                     invalid = invalid || runResult.invalid; all[family] = runResult.ranked; asia[family] = runResult.asiaRanked; popCounts[family] = runResult.popCounts
                 }
-                invalid = invalid || networkChanged.get(); updateProgress(100); setStage("完成"); appendLog(if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
-                saveHistory(all, families, invalid, host, wsPath); unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null
-                runOnUiThread { showResults(all, asia, popCounts, families, invalid, host, wsPath) }
+                if (!isCurrentRun(lease)) return@launch
+                invalid = invalid || networkChanged.get(); updateProgress(lease, 100); setStage(lease, "完成"); appendRunLog(lease, if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
+                saveHistory(all, families, invalid, host, wsPath, argoPort, expectedMbps)
+                if (releaseRun(lease)) postUiIfAlive {
+                    if (isLatestRunOutcome(lease) && currentPage == "run") {
+                        showResults(all, asia, popCounts, families, invalid, host, wsPath, argoPort, expectedMbps)
+                    }
+                }
             } catch (e: CancellationException) {
-                unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null; appendLog("=== 已停止 ===")
-                runOnUiThread { switchTo(home, "home"); refreshStatus(); Toast.makeText(this@MainActivity, "测速已停止", Toast.LENGTH_SHORT).show() }; throw e
+                appendRunLog(lease, "=== 已停止 ===")
+                if (releaseRun(lease)) {
+                    postUiIfAlive {
+                        if (isLatestRunOutcome(lease) && currentPage == "run") {
+                            switchTo(home, "home"); refreshStatus()
+                            Toast.makeText(this@MainActivity, "测速已停止", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                throw e
             } catch (e: Exception) {
-                unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null; appendLog("!! ${e.message ?: e.javaClass.simpleName}")
-                runOnUiThread { switchTo(home, "home"); refreshStatus(); Toast.makeText(this@MainActivity, e.message ?: "测试失败", Toast.LENGTH_LONG).show() }
+                appendRunLog(lease, "!! ${e.message ?: e.javaClass.simpleName}")
+                if (releaseRun(lease)) {
+                    postUiIfAlive {
+                        if (isLatestRunOutcome(lease) && currentPage == "run") {
+                            switchTo(home, "home"); refreshStatus()
+                            Toast.makeText(this@MainActivity, e.message ?: "测试失败", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
             }
         }
+        attachRunJob(lease, job)
+        if (networkChanged.get()) cancelRunIfCurrent(lease)
     }
-    private fun selectCandidates(snapshot: AuthorizedHostSnapshot, family: String): List<IpPipeline.Candidate> = if (source == "当前DNS") {
-        snapshot.forFamily(family).map { IpPipeline.Candidate(it, "当前DNS") }
-    } else {
-        CandidatePool.build(snapshot, importedIps, family, includeOfficialSamples = true).also {
-            appendLog("$family 自动候选 ${it.candidates.size}；导入有效 ${it.acceptedImported}/${it.importedCount}" +
+    private fun selectCandidates(snapshot: AuthorizedHostSnapshot, family: String, lease: RunLease): List<IpPipeline.Candidate> =
+        CandidatePool.build(snapshot, importedIps, family, includeOfficialSamples = true, snapshotSource = "测速域名DNS").also {
+            appendRunLog(lease, "$family 候选 ${it.candidates.size}；导入有效 ${it.acceptedImported}/${it.importedCount}" +
                 "；拒绝非 CF ${it.ignoredOutsideCloudflare}；跨协议族 ${it.ignoredWrongFamily}${if (it.importedSampled) "；长列表已分散抽样" else ""}")
         }.candidates.map { IpPipeline.Candidate(it.ip, it.source) }
-    }
+    private fun appendRunLog(lease: RunLease, value: String) { if (isCurrentRun(lease)) appendLog(value) }
     private fun appendLog(value: String) {
         logQueue.add(value); if (flushing.compareAndSet(false, true)) logHandler.postDelayed({ flushLogs() }, 180)
     }
@@ -398,44 +590,59 @@ class MainActivity : Activity() {
         while (logLines.size > 180) logLines.removeFirst(); if (::logs.isInitialized) logs.text = logLines.joinToString("\n")
         if (logQueue.isNotEmpty() && flushing.compareAndSet(false, true)) logHandler.postDelayed({ flushLogs() }, 180)
     }
-    private fun setStage(value: String) = runOnUiThread { if (::stage.isInitialized) stage.text = value }
-    private fun updateProgress(value: Int) = runOnUiThread { val safe = value.coerceIn(0, 100); progress.progress = safe; percent.text = "$safe%" }
+    private fun setStage(lease: RunLease, value: String) = runOnUiThread {
+        if (isCurrentRun(lease) && ::stage.isInitialized) stage.text = value
+    }
+    private fun updateProgress(lease: RunLease, value: Int) = runOnUiThread {
+        if (!isCurrentRun(lease)) return@runOnUiThread
+        val safe = value.coerceIn(0, 100); progress.progress = safe; percent.text = "$safe%"
+    }
 
     // ------------------------------------------ results / history
     private fun buildResult() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(30), dp(20), dp(20)); setBackgroundColor(bg) }
-        result = root; root.addView(label("结果 · Argo 入口排名", 22f, primary, true))
-        root.addView(label("把推荐 IP 填入节点地址/server；端口、SNI、Host 与 WS Path 保持下方配置。Full 固定 3 轮，失败按 0 Mbps 计。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
+        result = root; root.addView(label("结果 · IP 原生排名", 22f, primary, true))
+        root.addView(label("点击复制裸 IP，只替换 VMess / VLESS 节点的 address/server。原端口、UUID、TLS SNI、WS Host/Path 全部保持不变。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(primaryButton("返回首页") { switchTo(home, "home"); refreshStatus() }, lp(12))
     }
-    private fun showResults(all: Map<String, List<IpMetric>>, asia: Map<String, List<IpMetric>>, pops: Map<String, Map<String, Int>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String) {
+    private fun showResults(all: Map<String, List<IpMetric>>, asia: Map<String, List<IpMetric>>, pops: Map<String, Map<String, Int>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
         results.removeAllViews(); if (invalid) results.addView(label("⚠ 网络在测试中变化，结果仅供参考。", 13f, warn, true))
         results.addView(panel {
-            addView(label("节点固定参数", 13f, primary, true))
-            addView(label("端口：443\nSNI：$argoHost\nHost：$argoHost\nPath：${wsPath.ifBlank { "保持原节点配置" }}", 12f, secondary).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("使用方法", 13f, primary, true))
+            addView(label("address/server = 推荐 IP\n其他节点参数 = 保持原样\n本轮期望带宽 = $expectedMbps Mbps", 12f, secondary).apply { setPadding(0, dp(6), 0, 0) })
+            if (argoHost.isNotBlank()) addView(label("已启用高级复核：$argoHost:$argoPort · Path ${wsPath.ifBlank { "未填写" }}", 11f, good).apply { setPadding(0, dp(6), 0, 0) })
         }, lp(8))
         families.forEach { family ->
             val ranked = all[family].orEmpty()
-            val usable = ranked.filter { it.isArgoUsable }
-            val rejected = ranked.filterNot { it.isArgoUsable }
+            val usable = ranked.filter { it.isNodeUsable }
+            val rejected = ranked.filterNot { it.isNodeUsable }
             results.addView(label(if (strategy == "亚洲狩猎") "$family · 亚洲狩猎" else "$family · 完整排名", 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
             if (strategy == "亚洲狩猎") {
-                results.addView(label("Argo trace：" + listOf("HKG", "NRT", "SIN", "ICN", "TPE").joinToString(" · ") { "$it ${pops[family]?.get(it) ?: 0}" }, 12f, secondary))
-                addMetricSection("推荐榜（稳定速度优先）", asia[family].orEmpty().filter { it.isArgoUsable }.take(20), argoHost, wsPath, !invalid)
-                addMetricSection("全局速度榜", usable.take(20), argoHost, wsPath, !invalid)
-            } else addMetricSection("可用于 Argo 的入口", usable.take(20), argoHost, wsPath, !invalid)
-            if (rejected.isNotEmpty()) addMetricSection("未通过 / 未进入 Full（仅诊断）", rejected.take(12), argoHost, wsPath, false)
+                results.addView(label("公开 trace：" + listOf("HKG", "NRT", "SIN", "ICN", "TPE").joinToString(" · ") { "$it ${pops[family]?.get(it) ?: 0}" }, 12f, secondary))
+                addMetricSection("推荐榜（稳定速度优先）", asia[family].orEmpty().filter { it.isNodeUsable }.take(20), !invalid, expectedMbps)
+            } else addMetricSection("可直接填入节点的 IP", usable.take(20), !invalid, expectedMbps)
+            if (rejected.isNotEmpty()) addMetricSection("未通过 / 未进入 Full（仅诊断）", rejected.take(12), false, expectedMbps)
         }; switchTo(result, "result")
     }
-    private fun addMetricSection(title: String, metrics: List<IpMetric>, argoHost: String, wsPath: String, allowCopy: Boolean) {
+    private fun addMetricSection(title: String, metrics: List<IpMetric>, allowCopy: Boolean, expectedMbps: Int) {
         results.addView(label(title, 14f, primary, true).apply { setPadding(0, dp(14), 0, dp(6)) })
-        if (metrics.isEmpty()) results.addView(label("（没有通过 Argo 域名验证且完成测速的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
-            results.addView(metricCard(index, metric, argoHost, wsPath, allowCopy && metric.isArgoUsable), lp(if (index == 0) 0 else 8))
+        val dnsChampionIndex = if (allowCopy) metrics.indexOfFirst { it.isDnsSyncEligible } else -1
+        if (metrics.isEmpty()) results.addView(label("（没有通过多轮测速的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
+            results.addView(
+                metricCard(
+                    index,
+                    metric,
+                    allowCopy && metric.isNodeUsable,
+                    expectedMbps,
+                    allowDns = index == dnsChampionIndex
+                ),
+                lp(if (index == 0) 0 else 8)
+            )
         }
     }
     @SuppressLint("SetTextI18n")
-    private fun metricCard(index: Int, metric: IpMetric, argoHost: String, wsPath: String, allowCopy: Boolean): View = panel {
+    private fun metricCard(index: Int, metric: IpMetric, allowCopy: Boolean, expectedMbps: Int, allowDns: Boolean): View = panel {
         background = shape(if (index < 3) cardTop else card, 16, stroke)
         val medal = when (index) { 0 -> "🥇"; 1 -> "🥈"; 2 -> "🥉"; else -> "${index + 1}" }
         addView(label("$medal  ${metric.ip}${if (allowCopy) "  ⧉" else ""}", 15f, primary, true).apply {
@@ -443,11 +650,15 @@ class MainActivity : Activity() {
         })
         addView(label("${metric.family} · ${metric.source} · Full ${metric.full.size} 轮", 11f, muted))
         val route = metric.route
-        if (route?.ok == true) {
-            addView(label("Argo 验证：TLS/SNI/Host ✓ · trace HTTP ${route.traceHttpCode}" +
-                (if (route.wsPath.isNotEmpty()) " · WS 101 ✓" else "") , 11f, good, true))
-        } else addView(label("Argo 验证失败：${route?.error ?: "未执行"}", 11f, bad))
+        if (metric.routeValidationRequired) {
+            if (route?.ok == true) {
+                addView(label("高级节点复核：TLS/SNI/Host ✓ · trace HTTP ${route.traceHttpCode}" +
+                    (if (route.wsPath.isNotEmpty()) " · WS 101 ✓" else "") , 11f, good, true))
+            } else addView(label("高级节点复核失败：${route?.error ?: "未执行"}", 11f, bad))
+        } else addView(label("直接 IP 模式 · ${ProbeEngine.SPEED_HOST}:443 TLS 严格校验", 11f, good))
         addView(label("平均 ${fmt(metric.avgCompleteMbps)} Mbps · 最低 ${fmt(metric.minCompleteMbps)} Mbps · 可靠下限 ${fmt(metric.floorMbps)} Mbps", 12f, secondary).apply { setPadding(0, dp(5), 0, 0) })
+        val targetMet = metric.floorMbps >= expectedMbps
+        addView(label(if (targetMet) "达标 ✓ 可靠下限已达 $expectedMbps Mbps" else "未达目标：可靠下限低于 $expectedMbps Mbps", 11f, if (targetMet) good else warn, targetMet))
         addView(label("成功率 ${fmt(metric.fullSuccessRatePct)}% · 波动 ${fmt(metric.variationPct)}% · TTFB ${if (metric.medianTtfbMs < 0) "n/a" else "${fmt(metric.medianTtfbMs)} ms"} · ${metric.stability}", 11f, secondary))
         if (metric.primaryPop.isNotBlank()) addView(label("入口：${metric.primaryPop} · 亚洲评分 ${metric.edgeScore}${if (metric.popDrift) " · POP 漂移" else ""}", 11f, if (metric.edgeScore > 0) good else secondary, metric.edgeScore > 0))
         when {
@@ -457,19 +668,23 @@ class MainActivity : Activity() {
             metric.full.any { !it.ok } -> addView(label("含失败轮次，已按 0 Mbps 计入。", 10.5f, warn))
         }
         if (allowCopy) {
-            val summary = nodeConfigSummary(metric.ip, argoHost, wsPath)
-            addView(secondaryButton("复制 IP") { copy(metric.ip, "IP") }, lp(8))
-            addView(primaryButton("复制 Argo 节点填写参数") { copy(summary, "Argo 节点参数") }, lp(8))
+            addView(primaryButton("复制到节点地址 / server") { copy(metric.ip, "IP") }, lp(8))
+            if (allowDns) addView(secondaryButton("解析到我的域名（DNS-only）") { showDnsSyncDialog(metric.ip) }, lp(8))
         } else addView(label("此项不可作为节点地址复制。", 10.5f, warn).apply { setPadding(0, dp(8), 0, 0) })
     }
-    private fun nodeConfigSummary(ip: String, argoHost: String, wsPath: String): String =
-        "地址/server：$ip\n端口：443\nSNI：$argoHost\nHost：$argoHost\nPath：${wsPath.ifBlank { "保持原节点配置" }}"
     private fun fmt(value: Double) = "%.1f".format(value)
-    private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String) {
+    private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
         try {
-            val list = if (invalid) emptyList() else IpPipeline.rank(all.values.flatten().filter { it.isArgoUsable })
+            val list = if (invalid) emptyList() else IpPipeline.rank(all.values.flatten().filter { it.isNodeUsable })
             val winner = list.firstOrNull(); val net = NetEnv.detect(this)
-            val verdict = "$argoHost · Path ${wsPath.ifBlank { "保持原配置" }} · " + if (invalid) "网络变化，结果不可用于节点" else "Argo 入口固定多轮结果"
+            val target = winner?.floorMbps?.let { it >= expectedMbps } == true
+            val mode = if (argoHost.isBlank()) "直接 IP 模式" else "高级复核 $argoHost:$argoPort · Path ${wsPath.ifBlank { "未填写" }}"
+            val verdict = "$mode · 目标 $expectedMbps Mbps · " + when {
+                invalid -> "网络变化，结果不可用于节点"
+                winner == null -> "未找到可用 IP"
+                target -> "冠军可靠下限达标"
+                else -> "冠军可用，但可靠下限未达目标"
+            }
             HistoryStore.save(filesDir, HistoryStore.HistoryEntry(System.currentTimeMillis(), System.currentTimeMillis(), strategy, families.joinToString("+"), net.label, net.vpnActive, invalid, net.wifiSsid, effectiveOperator(net), net.phoneModel, winner?.ip.orEmpty(), winner?.let { fmt(it.avgCompleteMbps) }.orEmpty(), verdict, list.take(50).mapIndexed { i, m ->
                 HistoryStore.ResultLine(i + 1, m.ip, fmt(m.avgCompleteMbps), fmt(m.minCompleteMbps), fmt(m.floorMbps), "${fmt(m.fullSuccessRatePct)}%", "${fmt(m.variationPct)}%", if (m.medianTtfbMs < 0) "" else fmt(m.medianTtfbMs), m.stability, false, m.primaryPop)
             }))
@@ -498,12 +713,228 @@ class MainActivity : Activity() {
         root.addView(ScrollView(this).apply { addView(list) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)); root.addView(primaryButton("返回历史") { showHistory() }, lp(12)); switchTo(root, "history_detail")
     }
 
+    /** Two-phase Cloudflare A/AAAA synchronization; never logs credentials. */
+    private fun showDnsSyncDialog(championIp: String) {
+        val dialog = Dialog(this)
+        // Cancel only abandons the read-only preview flow. It never claims to
+        // cancel a request that has already been sent.
+        val previewFinishedOrAbandoned = AtomicBoolean(false)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(16))
+            background = shape(card, 18, stroke)
+        }
+        val type = if (championIp.contains(':')) "AAAA" else "A"
+        root.addView(label("解析冠军 IP 到我的域名", 17f, primary, true))
+        root.addView(label("将使用 $type 灰云记录（DNS-only）指向 $championIp。这里的 DNS 记录名与节点 TLS SNI / WS Host 是两个独立字段。", 11.5f, secondary).apply { setPadding(0, dp(7), 0, dp(12)) })
+
+        val prefs = getSharedPreferences("cf_dns_ui", MODE_PRIVATE)
+        val zoneInput = input("Zone ID（32 位，必填）").apply {
+            setSingleLine(true); setText(prefs.getString("zone_id", "").orEmpty())
+        }
+        val recordInput = input("完整 DNS 记录名，例如 edge.example.com").apply {
+            setSingleLine(true); setText(prefs.getString("record_name", "").orEmpty())
+        }
+        val storedToken = sessionCloudflareToken ?: CloudflareTokenStore.load(this)
+        if (sessionCloudflareToken == null && storedToken != null) sessionCloudflareToken = storedToken
+        val tokenInput = input(
+            if (storedToken == null) "Cloudflare API Token" else "已有本机/会话 Token，留空即使用",
+            password = true
+        ).apply { setSingleLine(true) }
+        root.addView(zoneInput)
+        root.addView(recordInput, lp(8))
+        root.addView(tokenInput, lp(8))
+        root.addView(label("最小权限：仅授权目标 Zone，Zone / DNS / Edit。不支持 Global API Key，不会自动查找 Zone。", 11f, warn).apply { setPadding(0, dp(7), 0, 0) })
+        val remember = CheckBox(this).apply {
+            text = "在本机安全保存 Token（默认关闭）"
+            setTextColor(secondary); textSize = 11.5f; isChecked = false
+            buttonTintList = ColorStateList.valueOf(accent)
+        }
+        root.addView(remember, lp(8))
+        root.addView(label(CloudflareTokenStore.SECURITY_NOTICE, 10.5f, muted))
+        if (storedToken != null) root.addView(secondaryButton("清除本机与当前会话 Token") {
+            CloudflareTokenStore.clear(this)
+            sessionCloudflareToken = null
+            tokenInput.hint = "Cloudflare API Token"
+            Toast.makeText(this, "已清除保存的 Token", Toast.LENGTH_SHORT).show()
+        }, lp(8))
+
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val cancelPreviewButton = secondaryButton("取消") {
+            previewFinishedOrAbandoned.set(true)
+            dialog.dismiss()
+        }
+        row.addView(cancelPreviewButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(8) })
+        val previewButton = primaryButton("生成只读预览") {}
+        row.addView(previewButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+        root.addView(row, lp(14))
+        previewButton.setOnClickListener {
+            val zoneId = zoneInput.text?.toString().orEmpty()
+            val recordName = recordInput.text?.toString().orEmpty()
+            val typed = tokenInput.text?.toString().orEmpty()
+            val token = try {
+                if (typed.isNotBlank()) CloudflareApiToken.parse(typed) else sessionCloudflareToken
+                    ?: throw IllegalArgumentException("请填写 Cloudflare API Token")
+            } catch (e: Exception) {
+                Toast.makeText(this, e.message ?: "API Token 无效", Toast.LENGTH_LONG).show(); return@setOnClickListener
+            }
+            val config = try {
+                CloudflareDns.normalizeConfig(CloudflareDns.Config(zoneId, recordName, token))
+            } catch (e: Exception) {
+                Toast.makeText(this, e.message ?: "DNS 配置无效", Toast.LENGTH_LONG).show(); return@setOnClickListener
+            }
+            previewButton.isEnabled = false
+            previewButton.text = "正在读取记录…"
+            val rememberToken = remember.isChecked
+            tokenInput.setText("")
+            scope.launch {
+                try {
+                    val plan = CloudflareDns.inspect(config, championIp)
+                    postUiIfAlive {
+                        // Cancellation/back/outside-tap wins if it happened
+                        // before this UI hand-off; no later confirm may appear.
+                        if (!dialog.isShowing ||
+                            !previewFinishedOrAbandoned.compareAndSet(false, true)
+                        ) return@postUiIfAlive
+                        dialog.dismiss()
+                        sessionCloudflareToken = token
+                        prefs.edit()
+                            .putString("zone_id", config.zoneId)
+                            .putString("record_name", config.recordName)
+                            .apply()
+                        if (rememberToken) scope.launch {
+                            try {
+                                CloudflareTokenStore.save(this@MainActivity, token)
+                            } catch (_: Exception) {
+                                postUiIfAlive {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Token 安全保存失败；本次仅在当前会话使用",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        }
+                        showDnsPlanConfirm(config, plan)
+                    }
+                } catch (e: Exception) {
+                    postUiIfAlive {
+                        if (previewFinishedOrAbandoned.get() || !dialog.isShowing) {
+                            return@postUiIfAlive
+                        }
+                        previewButton.isEnabled = true
+                        previewButton.text = "生成只读预览"
+                        Toast.makeText(this@MainActivity, e.message ?: "DNS 预览失败", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+        dialog.setOnCancelListener { previewFinishedOrAbandoned.set(true) }
+        dialog.setContentView(ScrollView(this).apply { addView(root) })
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.show()
+    }
+
+    private fun showDnsPlanConfirm(config: CloudflareDns.Config, plan: CloudflareDns.SyncPlan) {
+        val dialog = Dialog(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(16))
+            background = shape(card, 18, stroke)
+        }
+        root.addView(label(if (plan.requiresWrite) "Cloudflare DNS 写入确认" else "DNS 无需更新", 17f, primary, true))
+        root.addView(label(plan.confirmationText, 13f, primary, true).apply { setPadding(0, dp(10), 0, 0) })
+        root.addView(label(
+            if (plan.requiresWrite) "只会创建或更新上面这一条 ${plan.type.name} 记录；强制灰云 DNS-only，TTL 自动。同名 CNAME / NS 冲突会直接拒绝，不会删除或转换。"
+            else "当前 ${plan.type.name} 的 IP、灰云 DNS-only 和 TTL 自动状态均已一致；本次只读检查没有发送任何写入。",
+            11.5f,
+            if (plan.requiresWrite) warn else good
+        ).apply { setPadding(0, dp(8), 0, dp(12)) })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        if (!plan.requiresWrite) {
+            row.addView(primaryButton("完成") { dialog.dismiss() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+            root.addView(row)
+            dialog.setContentView(root)
+            dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+            dialog.show()
+            return
+        }
+        val writeNotice = label("", 10.5f, warn, true).apply { visibility = View.GONE }
+        root.addView(writeNotice, lp(8))
+        val cancelWriteButton = secondaryButton("取消") { dialog.dismiss() }
+        row.addView(cancelWriteButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(8) })
+        val applyButton = primaryButton("确认写入") {}
+        row.addView(applyButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+        root.addView(row)
+        applyButton.setOnClickListener {
+            // From this point the write and mandatory read-back verification
+            // form one indivisible UI operation. We do not offer a misleading
+            // cancel action for an HTTP request that may already be in flight.
+            dialog.setCancelable(false)
+            dialog.setCanceledOnTouchOutside(false)
+            cancelWriteButton.isEnabled = false
+            cancelWriteButton.text = "写入中"
+            applyButton.isEnabled = false
+            applyButton.text = "写入并回读校验…"
+            writeNotice.text = "请求已确认并开始写入；写入完成前请勿关闭。"
+            writeNotice.visibility = View.VISIBLE
+            scope.launch {
+                try {
+                    val synced = CloudflareDns.apply(config, plan)
+                    postUiIfAlive {
+                        dialog.dismiss()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "${synced.type.name} ${synced.name} 已同步为 ${synced.content}（DNS-only）",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } catch (e: Exception) {
+                    postUiIfAlive {
+                        dialog.setCancelable(true)
+                        dialog.setCanceledOnTouchOutside(true)
+                        cancelWriteButton.isEnabled = true
+                        cancelWriteButton.text = "取消"
+                        applyButton.isEnabled = true
+                        applyButton.text = "确认写入"
+                        writeNotice.text = "本次操作未通过写入与回读校验；请按提示处理后重试或关闭。"
+                        Toast.makeText(this@MainActivity, e.message ?: "DNS 写入失败", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+        dialog.setContentView(root)
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.show()
+    }
+
+    /** Executes UI work only while this Activity can still own that UI. */
+    private fun postUiIfAlive(block: () -> Unit) {
+        if (isFinishing || isDestroyed) return
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) block()
+        }
+    }
+
     private fun copy(value: String, kind: String) { try { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(kind, value)); Toast.makeText(this, "已复制：$value", Toast.LENGTH_SHORT).show() } catch (_: Exception) { Toast.makeText(this, "复制失败", Toast.LENGTH_SHORT).show() } }
     private fun showConfirm(message: String, onConfirm: () -> Unit) {
         val dialog = Dialog(this); val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(20), dp(22), dp(16)); background = shape(card, 18, stroke) }; root.addView(label(message, 14f, primary).apply { setPadding(0, 0, 0, dp(16)) })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }; row.addView(secondaryButton("取消") { dialog.dismiss() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(8) }); row.addView(primaryButton("继续") { dialog.dismiss(); onConfirm() }, LinearLayout.LayoutParams(0, dp(44), 1f)); root.addView(row); dialog.setContentView(root); dialog.window?.setBackgroundDrawableResource(android.R.color.transparent); dialog.show()
     }
     private fun switchTo(view: View, page: String) { currentPage = page; setContentView(view) }
-    override fun onBackPressed() { when (currentPage) { "run" -> { runningJob?.cancel(); switchTo(home, "home"); refreshStatus() }; "result", "history" -> { switchTo(home, "home"); refreshStatus() }; "history_detail" -> showHistory(); else -> super.onBackPressed() } }
-    override fun onDestroy() { unregisterNetworkWatch?.invoke(); logHandler.removeCallbacksAndMessages(null); scope.cancel(); super.onDestroy() }
+    override fun onBackPressed() { when (currentPage) { "run" -> { cancelActiveRun(abandonOutcome = true); switchTo(home, "home"); refreshStatus() }; "result", "history" -> { switchTo(home, "home"); refreshStatus() }; "history_detail" -> showHistory(); else -> super.onBackPressed() } }
+    override fun onDestroy() {
+        var watcher: (() -> Unit)? = null
+        synchronized(runStateLock) {
+            runGeneration.incrementAndGet()
+            activeRun = null
+            runningJob = null
+            watcher = unregisterNetworkWatch
+            unregisterNetworkWatch = null
+        }
+        watcher?.invoke()
+        logHandler.removeCallbacksAndMessages(null)
+        scope.cancel()
+        super.onDestroy()
+    }
 }

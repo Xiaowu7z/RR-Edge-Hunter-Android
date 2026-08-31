@@ -17,6 +17,16 @@ fun main() {
     check("IPv6 官方抽样受上限约束", v6Samples.size in 1..14, "size=${v6Samples.size}")
     check("IPv6 官方抽样全部属于 CF", v6Samples.all { CfRanges.isCloudflare(InetAddress.getByName(it)) })
 
+    val direct = CandidatePool.build(
+        AuthorizedHostSnapshot(host = "speed.cloudflare.com", ipv4 = emptyList(), ipv6 = emptyList()),
+        imported = emptyList(),
+        family = "IPv4",
+        includeOfficialSamples = true,
+        snapshotSource = "测速域名DNS"
+    )
+    check("直接IP模式不需要用户域名", direct.candidates.isNotEmpty(), direct.toString())
+    check("直接IP官方抽样全部属于CF", direct.candidates.all { CfRanges.isCloudflare(InetAddress.getByName(it.ip)) })
+
     val snapshot = AuthorizedHostSnapshot(
         host = "argo.example.com",
         ipv4 = listOf("104.16.0.1"),
@@ -36,6 +46,15 @@ fun main() {
     check("非 CF 导入地址被拒绝", importedOnly.ignoredOutsideCloudflare == 1, importedOnly.toString())
     check("其他协议族单独统计", importedOnly.ignoredWrongFamily == 1, importedOnly.toString())
     check("当前 DNS 始终作为首个种子", importedOnly.candidates.firstOrNull()?.source == "当前DNS", importedOnly.toString())
+
+    val speedSeed = CandidatePool.build(
+        snapshot,
+        imported = emptyList(),
+        family = "IPv4",
+        includeOfficialSamples = false,
+        snapshotSource = "测速域名DNS"
+    )
+    check("公开测速DNS种子有独立来源标签", speedSeed.candidates.single().source == "测速域名DNS")
 
     val many = (0..255).map { "104.16.0.$it" }
     val bounded = CandidatePool.build(snapshot, many, "IPv4", includeOfficialSamples = true)

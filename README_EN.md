@@ -1,80 +1,98 @@
 # RR Edge Hunter Android · CF 优选IP
 
-> 📱 **Android edition** · 💻 [RR Edge Hunter for desktop](https://github.com/Xiaowu7z/RR-Edge-Hunter) · 💬 [RR-vps community](https://t.me/GMgP4NG7lncwZGE1)
+> Android edition · [Desktop edition](https://github.com/Xiaowu7z/RR-Edge-Hunter) · [RR-vps community](https://t.me/GMgP4NG7lncwZGE1)
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** is the Android Argo-entry selector in the RR Edge Hunter family. Given an existing Argo hostname, it evaluates bounded candidates from current DNS, Cloudflare-published ranges, and an optional imported pool. The selected IP goes in the node's `address/server` field while the original hostname remains TLS SNI and HTTP Host.
+**CF 优选IP** is a local Android Cloudflare ingress-IP selector. The default scan requires no user hostname: it pins `speed.cloudflare.com` to each candidate on port `443`, retains normal TLS certificate, SNI, Host, and actual-peer validation, and performs staged multi-round downloads.
 
-> Results apply only to the current device, egress network, and test run. Test again after changing carrier, Wi-Fi, VPN, proxy, or network egress.
+The output is a bare IPv4 or IPv6 address. Put it only in the VMess/VLESS node's `address` or `server` field. Keep the node's original port, UUID, protocol, TLS SNI, HTTP Host, and WebSocket Path unchanged.
 
 ## Install
 
 Current version: **1.0.0** (`com.xiaowu7z.cfipoptimizer`)
 
-[⬇️ **Download and install the latest CF 优选IP (recommended)**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk)
-
-This is one universal APK. Download it and follow Android's installation prompt—there is no CPU architecture, release, or advanced-setting choice. On the first install, allow your browser to install apps if Android asks.
+[Download the latest universal APK](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk). No CPU-architecture choice is required.
 
 ### Testing channel
 
-[🧪 **Manually download the current testing APK**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/download/testing/CF-IP-Optimizer-testing.apk)
+[Manually download the current testing APK](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/download/testing/CF-IP-Optimizer-testing.apk).
 
-The testing APK and stable release intentionally remain at version **1.0.0**, so automatic updaters will not see it as a newer version. Download and install it manually over the existing app. It uses the same release signature and does not replace the stable `latest` link above.
+The testing and stable APKs intentionally remain at version **1.0.0**, so the testing package must be installed manually over the existing app. It uses the same release signature and does not replace the stable `latest` link.
 
-### Automatic updates (optional)
+### Obtainium
 
-[🔄 **Already use Obtainium? Enable automatic updates**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
-
-The link already contains the repository, app name, author, and package ID. Review **CF 优选IP** and confirm the import; no regular expressions, CPU architecture, prerelease, or ordering options are needed. Obtainium will then track stable releases.
-
-<details>
-<summary>Troubleshooting: install and verification</summary>
-
-If the automatic-update link does not open, install the [latest Obtainium](https://github.com/ImranR98/Obtainium/releases/latest) and add this repository URL only:
+[Add this app to Obtainium for automatic updates](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D). If your browser or Android does not hand the link to Obtainium, open Obtainium, tap **Add App**, and paste this repository address into **Source URL**:
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 ```
 
-Every stable release includes `CF-IP-Optimizer.apk.sha256`; see [all Releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases) for manual download or verification.
+Leave the other options at their defaults; no regex, architecture, prerelease, or ordering option is needed.
 
-</details>
+## One-click defaults
 
-## Features
+| Setting | Default |
+| --- | --- |
+| Address family | IPv4 |
+| Target bandwidth | 100 Mbps |
+| Strategy | Asia Hunt |
+| Measurement identity | `speed.cloudflare.com:443` |
+| Candidate source | Official Cloudflare pool, optionally plus imported official-range IPs |
+| Output | Replace node `address/server` only |
 
-- Carrier profiles: Auto, China Mobile, China Telecom, and China Unicom.
-- Independent IPv4, IPv6, and dual-stack modes.
-- Balanced and Asia-hunting strategies; reliability and stable throughput remain primary, while POP evidence such as HKG, NRT, SIN, ICN, and TPE is only a tie-breaker.
-- Pre, Micro, and Full staged tests with repeat checks for success rate, latency, TTFB, transfer performance, and variance; failed samples count as zero in ranking.
-- One-click mode combines current DNS seeds, bounded samples from official Cloudflare CIDRs, and optional pasted/file/HTTPS-subscription pools. A current-DNS-only diagnostic remains available.
-- Each candidate must pass normal certificate, SNI/Host, remote-peer, and Argo trace checks; an optional WS Path requires a complete WebSocket 101 handshake.
-- Copy either the IP or a complete node-field summary: address/server, port 443, SNI, Host, and Path.
-- Up to 50 local history entries.
+Asia Hunt prioritizes reliability, round floor, minimum/average throughput, and variance. POP labels such as HKG, NRT, SIN, ICN, and TPE are tie-breakers only.
 
-The app requests only Internet and network-state permissions. File import uses Android's system document picker and does not request broad storage access.
+## How it works
 
-## Candidate and test boundary
+1. Load current `speed.cloudflare.com` DNS seeds and a bounded deterministic sample from Cloudflare-published CIDRs.
+2. Optionally add imported addresses that belong to official Cloudflare ranges.
+3. Pin `speed.cloudflare.com:443` to each candidate while retaining platform certificate, SNI, Host, and actual TCP-peer validation.
+4. Run Pre, Micro, and repeated Full downloads; failed Full rounds count as `0 Mbps`.
+5. Rank by reliability, round floor, minimum/average throughput, variance, and TTFB.
 
-This is not an Internet-wide scanner. Each run first snapshots a user-authorized Argo hostname to verify Cloudflare proxying and obtain trusted seeds. One-click mode can add a small deterministic sample from Cloudflare-published CIDRs and imported candidates, with a hard limit per address family.
+The default workflow measures the current Android network to Cloudflare ingress. It needs neither a VPS origin IP nor an Argo hostname.
 
-- Imported candidates do not have to appear in the hostname's current DNS answers, but every target must be inside an official Cloudflare CIDR.
-- The final pool is capped at 48 IPv4 and 24 IPv6 candidates; long imported lists are deterministically spread-sampled.
-- IPv4 and IPv6 are validated and reported independently.
-- The app temporarily fixes each candidate IP for the Argo hostname while retaining its SNI, Host, and platform TLS certificate verification.
-- Because an Argo hostname normally lacks `speed.cloudflare.com`'s `/__down`, Argo compatibility is validated with the user's hostname while staged throughput uses the public Cloudflare speed host on the same candidate IP.
+## Custom candidate pools
 
-The app does not provide or perform arbitrary forced routing, `hosts` changes, DNS record writes of any kind, proxy configuration, port scanning, vulnerability testing, stress testing, or access-control bypass.
+The advanced panel supports long paste, IPv4/IPv6 endpoint notation, bounded CIDRs, TXT/CSV/TSV/JSON/Base64 files, and public HTTPS subscriptions. Imported candidates do not need to intersect the speed hostname's current DNS answers, but every tested address must belong to an official Cloudflare CIDR. Private, reserved, non-Cloudflare, wrong-family, and malformed entries are rejected; candidates, concurrency, and traffic are bounded.
 
-## Custom IP input
+Android's system document picker is used, so broad storage permission is not requested. Unofficial third-party relays are not mixed into the default official pool.
 
-Open Add/manage IP pool to paste addresses, import a local file, or fetch an IP subscription. Entries are normalized and deduplicated, with valid, ignored, IPv4, IPv6, and CIDR counts shown to the user.
+## Optional advanced Argo compatibility check
 
-CIDR expansion, candidate count, file size, and subscription size are bounded. Subscriptions accept only public **HTTPS** targets on the default `443` port; every redirect is revalidated and each connection is pinned to a validated public IP.
+Normal scanning needs no hostname. Enable the advanced Argo check only to validate candidates against your own node. Supply the original TLS SNI/HTTP Host hostname, original TLS port, and optionally the WebSocket Path.
 
-Importing an address does not make it eligible. It must pass the official-range, family, Argo TLS/route, actual-peer, and bounded-pool checks.
+Candidates must then pass certificate, SNI, Host, and actual-peer checks; a supplied Path must complete a standard WebSocket `101` upgrade. This is an additional gate only. The output remains a bare IP, and all other node fields stay unchanged.
 
-## Build and verification
+## Optional Cloudflare DNS synchronization
+
+The result screen can write a champion to one explicitly selected Cloudflare DNS record. This feature is off by default and normal scanning/copying needs no Cloudflare credentials.
+
+- IPv4 maps to `A`; IPv6 maps to `AAAA`.
+- The record is forced to **DNS-only** (gray cloud).
+- A 32-character Zone ID and full record FQDN are required; the app does not guess the Zone.
+- Only an API Token is accepted. The minimum permission is **Zone / DNS / Edit** for the selected Zone; Global API Keys are rejected.
+- Step one generates a read-only preview. Step two requires explicit confirmation, followed by read-back verification.
+- Existing CNAMEs, duplicate same-type records, and ambiguous states are rejected; the app never deletes, merges, or converts them automatically.
+- Tokens are excluded from measurement logs, history, exports, and error text.
+
+By default, Android keeps the token in current-session memory only. Persistent storage occurs only when the user explicitly enables local secure storage; the token is then encrypted with an Android Keystore AES-GCM key and can be cleared from the UI. Zone ID and record name may be retained as non-secret preferences.
+
+DNS synchronization is an optional output and does not alter the Argo hostname or any node port, UUID, SNI, Host, or Path.
+
+## Security and privacy
+
+- The app requests only Internet and network-state permissions.
+- Candidate probes are bounded to official Cloudflare ranges and do not inherit a system HTTP proxy.
+- TLS certificate, SNI, Host, and actual-peer validation remain enabled.
+- HTTPS subscriptions enforce public-target, size, redirect, and DNS-rebinding checks.
+- API tokens never enter logs, history, or exports; persistent storage is explicit and Keystore-backed.
+- The app does not provide port scanning, vulnerability testing, stress testing, arbitrary hosts/route changes, proxy configuration, or access-control bypass.
+
+See [SECURITY.md](SECURITY.md) and [NOTICE.md](NOTICE.md).
+
+## Build
 
 JDK 17 and Android SDK 34 are required:
 
@@ -82,10 +100,6 @@ JDK 17 and Android SDK 34 are required:
 ./gradlew :logic-tests:check :app:lintDebug :app:assembleDebug
 ```
 
-`logic-tests` is deterministic and does not depend on public-network state. Network and device checks should run separately in a controlled environment. Release signing is injected outside the repository; the new-certificate placeholder and verification process are documented in [RELEASE_SIGNING.md](RELEASE_SIGNING.md).
+Release signing is injected outside the repository; see [RELEASE_SIGNING.md](RELEASE_SIGNING.md). The version remains **1.0.0**.
 
-## Scope
-
-Use this project only to assess official Cloudflare entry IPs for Argo nodes you own or are explicitly authorized to use and test. Follow applicable law, provider policies, and service terms.
-
-Cloudflare, Android, and other marks belong to their respective owners. This is an independent, unofficial project and is not affiliated with, sponsored by, or endorsed by those providers. See [NOTICE.md](NOTICE.md).
+Cloudflare, Android, and other marks belong to their respective owners. This is an independent, unofficial project.

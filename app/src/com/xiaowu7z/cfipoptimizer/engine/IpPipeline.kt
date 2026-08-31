@@ -17,6 +17,7 @@ data class IpMetric(
     val family: String,
     val source: String,
     val route: ProbeEngine.ArgoRouteResult? = null,
+    val routeValidationRequired: Boolean = false,
     val pre: ProbeEngine.ProbeResult? = null,
     val micro: ProbeEngine.ProbeResult? = null,
     val full: List<ProbeEngine.ProbeResult> = emptyList(),
@@ -33,7 +34,18 @@ data class IpMetric(
 ) {
     // A single lucky success is not enough for a Telegram/video recommendation.
     // With the fixed three Full rounds this requires at least two successes.
-    val isArgoUsable: Boolean get() = route?.ok == true && full.isNotEmpty() && fullSuccessRatePct >= 66.0
+    val isNodeUsable: Boolean get() =
+        (!routeValidationRequired || route?.ok == true) && full.isNotEmpty() && fullSuccessRatePct >= 66.0
+    // DNS changes have a larger blast radius than copying an IP for a local
+    // trial, so only a fixed three-round result with no failed sample may be
+    // offered as the per-family DNS champion.
+    val isDnsSyncEligible: Boolean get() =
+        isNodeUsable && full.size == 3 && full.all { it.ok } &&
+            fullSuccessRatePct >= 99.9 && floorMbps > 0.0
+    // Kept as a source-compatible alias for callers from the first 1.0.0
+    // implementation.  The default product is now direct-IP ranking, while an
+    // Argo hostname route check is an optional extra gate.
+    val isArgoUsable: Boolean get() = isNodeUsable
     val stability: String get() = when {
         fullSuccessRatePct >= 90.0 && variationPct <= 15.0 -> "优秀"
         fullSuccessRatePct >= 75.0 && variationPct <= 30.0 -> "良好"
@@ -45,10 +57,10 @@ data class IpMetric(
 /**
  * IP-native staged runner.
  *
- * Every candidate is first fixed to the user's Argo hostname and must pass
- * normal TLS hostname verification. Throughput is then measured against
- * speed.cloudflare.com on the same IP because an Argo hostname does not expose
- * Cloudflare's /__down endpoint.
+ * The default path fixes speed.cloudflare.com to every candidate and measures
+ * that exact TCP peer.  No user hostname is needed.  When [argoHost] is not
+ * blank, the same candidates must additionally pass normal TLS/SNI/Host (and
+ * optional WebSocket) verification for that hostname before speed testing.
  */
 object IpPipeline {
     private const val ROUTE_TIMEOUT_SECONDS = 8
@@ -92,6 +104,22 @@ object IpPipeline {
         fullConcurrency = 1
     )
 
+    /**
+     * Make the selected expected bandwidth affect the amount of evidence.  A
+     * higher target receives a longer Full payload, while the bounded stage
+     * counts and concurrency remain unchanged.  This keeps the field from
+     * being a cosmetic label without turning a phone into a traffic generator.
+     */
+    fun forExpectedMbps(base: ModeParams, expectedMbps: Int): ModeParams {
+        val fullBytes = when {
+            expectedMbps <= 50 -> 2_000_000L
+            expectedMbps <= 100 -> 4_000_000L
+            expectedMbps <= 200 -> 6_000_000L
+            else -> 8_000_000L
+        }
+        return base.copy(fullBytes = fullBytes)
+    }
+
     data class Candidate(val ip: String, val source: String)
 
     data class Stage(val name: String, val current: Int = 0, val total: Int = 0)
@@ -128,6 +156,7 @@ object IpPipeline {
         candidates: List<Candidate>,
         params: ModeParams,
         asiaHunt: Boolean,
+        argoPort: Int = 443,
         networkInvalid: () -> Boolean = { false },
         onStage: (Stage) -> Unit = {},
         log: (String) -> Unit = {}
@@ -146,29 +175,35 @@ object IpPipeline {
             if (it) log("网络环境已变化，本轮结果作废")
         }
 
-        onStage(Stage("Argo 入口兼容验证", 0, deduped.size))
-        val routeDone = AtomicInteger(0)
-        val routeResults = parallel(deduped, params.preConcurrency) { candidate ->
-            coroutineContext.ensureActive()
-            if (checkNetwork()) {
-                candidate to ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidate.ip, error = "网络变化")
-            } else {
-                val result = ProbeEngine.probeArgoRoute(
-                    targetIp = candidate.ip,
-                    argoHost = argoHost,
-                    wsPath = wsPath,
-                    timeoutSec = ROUTE_TIMEOUT_SECONDS,
-                    log = log
-                )
-                onStage(Stage("Argo 入口兼容验证", routeDone.incrementAndGet(), deduped.size))
-                candidate to result
-            }
-        }.toMap()
+        val routeValidationRequired = argoHost.isNotBlank()
+        val routeResults: Map<Candidate, ProbeEngine.ArgoRouteResult> = if (routeValidationRequired) {
+            onStage(Stage("高级节点兼容复核", 0, deduped.size))
+            val routeDone = AtomicInteger(0)
+            parallel(deduped, params.preConcurrency) { candidate ->
+                coroutineContext.ensureActive()
+                if (checkNetwork()) {
+                    candidate to ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidate.ip, error = "网络变化")
+                } else {
+                    val result = ProbeEngine.probeArgoRoute(
+                        targetIp = candidate.ip,
+                        argoHost = argoHost,
+                        wsPath = wsPath,
+                        targetPort = argoPort,
+                        timeoutSec = ROUTE_TIMEOUT_SECONDS,
+                        log = log
+                    )
+                    onStage(Stage("高级节点兼容复核", routeDone.incrementAndGet(), deduped.size))
+                    candidate to result
+                }
+            }.toMap()
+        } else emptyMap()
         if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
-        val routeEligible = deduped.filter { routeResults[it]?.ok == true }
+        val routeEligible = if (routeValidationRequired) {
+            deduped.filter { routeResults[it]?.ok == true }
+        } else deduped
         if (routeEligible.isEmpty()) {
-            val failures = deduped.map { metric(it, routeResults[it], null, null, emptyList()) }
+            val failures = deduped.map { metric(it, routeResults[it], true, null, null, emptyList()) }
             return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
         }
 
@@ -184,7 +219,10 @@ object IpPipeline {
                     bytes = params.preBytes,
                     timeoutSec = PRE_TIMEOUT_SECONDS,
                     testHost = ProbeEngine.SPEED_HOST,
-                    includeTrace = false,
+                    targetPort = 443,
+                    // Direct-IP mode has no user-host route result carrying a
+                    // POP, so obtain one trace during the bounded preflight.
+                    includeTrace = !routeValidationRequired,
                     log = log
                 )
                 onStage(Stage("边缘速度预检", preDone.incrementAndGet(), routeEligible.size))
@@ -195,7 +233,7 @@ object IpPipeline {
 
         val preEligible = routeEligible.filter { preResults[it]?.ok == true }
         if (preEligible.isEmpty()) {
-            val failures = deduped.map { metric(it, routeResults[it], preResults[it], null, emptyList()) }
+            val failures = deduped.map { metric(it, routeResults[it], routeValidationRequired, preResults[it], null, emptyList()) }
             return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
         }
         val microCandidates = chooseForMicro(preEligible, preResults, routeResults, params.microLimit, asiaHunt)
@@ -212,6 +250,7 @@ object IpPipeline {
                     bytes = params.microBytes,
                     timeoutSec = MICRO_TIMEOUT_SECONDS,
                     testHost = ProbeEngine.SPEED_HOST,
+                    targetPort = 443,
                     includeTrace = false,
                     log = log
                 )
@@ -227,14 +266,14 @@ object IpPipeline {
             // staged gate have no Full samples and therefore carry a zero score
             // instead of quietly disappearing from the audit trail.
             val metrics = deduped.map { candidate ->
-                metric(candidate, routeResults[candidate], preResults[candidate], microResults[candidate], emptyList())
+                metric(candidate, routeResults[candidate], routeValidationRequired, preResults[candidate], microResults[candidate], emptyList())
             }
             return@coroutineScope FamilyResult(rank(metrics), rankAsia(metrics), emptyMap())
         }
 
         // Round-major scheduling gives each finalist an early first result while
         // still guaranteeing an exact fixed number of Full attempts per IP.
-        val schedule = buildList {
+        val schedule: List<Pair<Int, Candidate>> = buildList {
             repeat(params.fullRounds) { round ->
                 finalCandidates.forEach { add(round to it) }
             }
@@ -251,6 +290,7 @@ object IpPipeline {
                     bytes = params.fullBytes,
                     timeoutSec = FULL_TIMEOUT_SECONDS,
                     testHost = ProbeEngine.SPEED_HOST,
+                    targetPort = 443,
                     includeTrace = false,
                     log = log
                 )
@@ -266,10 +306,10 @@ object IpPipeline {
         // is evidence too; its empty Full series remains an explicit zero in
         // the result rather than being silently dropped.
         val metrics = deduped.map { candidate ->
-            metric(candidate, routeResults[candidate], preResults[candidate], microResults[candidate], perIpFull[candidate.ip].orEmpty())
+            metric(candidate, routeResults[candidate], routeValidationRequired, preResults[candidate], microResults[candidate], perIpFull[candidate.ip].orEmpty())
         }
         val pops = LinkedHashMap<String, Int>()
-        metrics.mapNotNull { it.route?.takeIf { route -> route.ok && route.colo.isNotBlank() }?.colo }
+        metrics.map { it.primaryPop }.filter { it.isNotBlank() }
             .forEach { pop -> pops[pop.uppercase()] = (pops[pop.uppercase()] ?: 0) + 1 }
         FamilyResult(rank(metrics), rankAsia(metrics), pops)
     }
@@ -282,7 +322,7 @@ object IpPipeline {
         asiaHunt: Boolean
     ): List<Candidate> = candidates.sortedWith(
         compareByDescending<Candidate> { pre[it]?.completeTransferMbps ?: 0.0 }
-            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty()) else 0 }
+            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty().ifBlank { pre[it]?.colo.orEmpty() }) else 0 }
             .thenBy { it.ip }
     ).take(limit)
 
@@ -295,7 +335,7 @@ object IpPipeline {
         asiaHunt: Boolean
     ): List<Candidate> = candidates.filter { micro[it]?.ok == true }.sortedWith(
         compareByDescending<Candidate> { micro[it]?.completeTransferMbps ?: 0.0 }
-            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty()) else 0 }
+            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty().ifBlank { pre[it]?.colo.orEmpty() }) else 0 }
             .thenBy { it.ip }
     ).take(limit)
 
@@ -304,6 +344,7 @@ object IpPipeline {
     private fun metric(
         candidate: Candidate,
         route: ProbeEngine.ArgoRouteResult?,
+        routeValidationRequired: Boolean,
         pre: ProbeEngine.ProbeResult?,
         micro: ProbeEngine.ProbeResult?,
         full: List<ProbeEngine.ProbeResult>
@@ -318,7 +359,10 @@ object IpPipeline {
         val floor = if (full.isEmpty() || full.any { !it.ok }) 0.0 else min
         val variation = variation(speeds)
         val ttfb = median(full.filter { it.ok }.map { it.ttfbMs })
-        val pops = listOfNotNull(route?.takeIf { it.ok }?.colo?.uppercase()).filter { it.isNotBlank() }
+        val pops = listOfNotNull(
+            route?.takeIf { it.ok }?.colo?.uppercase(),
+            pre?.takeIf { it.ok }?.colo?.uppercase()
+        ).filter { it.isNotBlank() }
         val primary = pops.groupingBy { it }.eachCount().entries
             .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenByDescending { popPriority(it.key) })
             .firstOrNull()?.key.orEmpty()
@@ -329,6 +373,7 @@ object IpPipeline {
             family = ProbeEngine.familyOf(candidate.ip) ?: "未知",
             source = candidate.source,
             route = route,
+            routeValidationRequired = routeValidationRequired,
             pre = pre,
             micro = micro,
             full = full,
@@ -346,8 +391,8 @@ object IpPipeline {
     }
 
     fun rank(metrics: List<IpMetric>): List<IpMetric> = metrics.sortedWith(
-        compareByDescending<IpMetric> { it.isArgoUsable }
-            .thenByDescending { it.route?.ok == true }
+        compareByDescending<IpMetric> { it.isNodeUsable }
+            .thenByDescending { !it.routeValidationRequired || it.route?.ok == true }
             .thenByDescending { it.floorMbps }
             .thenByDescending { it.fullSuccessRatePct }
             .thenByDescending { it.minCompleteMbps }
@@ -358,8 +403,8 @@ object IpPipeline {
     )
 
     fun rankAsia(metrics: List<IpMetric>): List<IpMetric> = metrics.sortedWith(
-        compareByDescending<IpMetric> { it.isArgoUsable }
-            .thenByDescending { it.route?.ok == true }
+        compareByDescending<IpMetric> { it.isNodeUsable }
+            .thenByDescending { !it.routeValidationRequired || it.route?.ok == true }
             .thenByDescending { it.floorMbps }
             .thenByDescending { it.fullSuccessRatePct }
             .thenByDescending { it.minCompleteMbps }

@@ -11,6 +11,7 @@ kotlin {
             kotlin.include(
                 "com/xiaowu7z/cfipoptimizer/IpSources.kt",
                 "com/xiaowu7z/cfipoptimizer/IpSubscription.kt",
+                "com/xiaowu7z/cfipoptimizer/CloudflareDns.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/CfRanges.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/AuthorizedHost.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/CandidatePool.kt",
@@ -22,7 +23,8 @@ kotlin {
                 "AuthorizedHostTest.kt",
                 "CandidatePoolTest.kt",
                 "IpPipelineRankTest.kt",
-                "FixedDnsTest.kt"
+                "FixedDnsTest.kt",
+                "CloudflareDnsTest.kt"
             )
         }
     }
@@ -61,7 +63,7 @@ val fixedDnsTest by tasks.registering(JavaExec::class) {
 
 val candidatePoolTest by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies bounded Cloudflare candidate sampling for Argo mode."
+    description = "Verifies bounded Cloudflare candidate sampling for direct-IP mode."
     dependsOn(tasks.named("classes"))
     classpath = logicRuntimeClasspath
     mainClass.set("CandidatePoolTestKt")
@@ -75,6 +77,21 @@ val ipPipelineRankTest by tasks.registering(JavaExec::class) {
     mainClass.set("IpPipelineRankTestKt")
 }
 
+val cloudflareDnsTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies safe two-phase Cloudflare A/AAAA synchronization."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("CloudflareDnsTestKt")
+}
+
 tasks.named("check") {
-    dependsOn(ipSourcesTest, authorizedHostTest, candidatePoolTest, ipPipelineRankTest, fixedDnsTest)
+    dependsOn(
+        ipSourcesTest,
+        authorizedHostTest,
+        candidatePoolTest,
+        ipPipelineRankTest,
+        fixedDnsTest,
+        cloudflareDnsTest
+    )
 }

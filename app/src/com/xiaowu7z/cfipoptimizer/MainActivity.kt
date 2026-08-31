@@ -692,7 +692,12 @@ class MainActivity : Activity() {
     private fun fmt(value: Double) = "%.1f".format(value)
     private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
         try {
-            val list = if (invalid) emptyList() else IpPipeline.rank(all.values.flatten().filter { it.isNodeUsable })
+            val usableMetrics = all.values.flatten().filter { it.isNodeUsable }
+            val list = if (invalid) emptyList() else when (strategy) {
+                "亚洲狩猎" -> IpPipeline.rankAsia(usableMetrics)
+                "最大带宽" -> IpPipeline.rankMaximum(usableMetrics)
+                else -> IpPipeline.rank(usableMetrics)
+            }
             val winner = list.firstOrNull(); val net = NetEnv.detect(this)
             val target = winner?.floorMbps?.let { it >= expectedMbps } == true
             val mode = if (argoHost.isBlank()) "直接 IP 模式" else "高级复核 $argoHost:$argoPort · Path ${wsPath.ifBlank { "未填写" }}"

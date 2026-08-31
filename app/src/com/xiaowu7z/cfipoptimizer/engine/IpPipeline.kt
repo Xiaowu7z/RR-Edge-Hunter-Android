@@ -322,7 +322,8 @@ object IpPipeline {
         val pops = LinkedHashMap<String, Int>()
         metrics.map { it.primaryPop }.filter { it.isNotBlank() }
             .forEach { pop -> pops[pop.uppercase()] = (pops[pop.uppercase()] ?: 0) + 1 }
-        FamilyResult(rank(metrics), rankAsia(metrics), pops)
+        val ranked = if (params.earlyStop) rank(metrics) else rankMaximum(metrics)
+        FamilyResult(ranked, if (asiaHunt) rankAsia(metrics) else ranked, pops)
     }
 
     private fun chooseForSpeed(
@@ -396,6 +397,19 @@ object IpPipeline {
             .thenByDescending { it.fullSuccessRatePct }
             .thenByDescending { it.minCompleteMbps }
             .thenByDescending { it.avgCompleteMbps }
+            .thenBy { it.variationPct }
+            .thenBy { if (it.medianTtfbMs < 0.0) Double.MAX_VALUE else it.medianTtfbMs }
+            .thenBy { it.ip }
+    )
+
+    /** 最大带宽按两次成功样本的平均下载速度排序，再看峰值与可靠下限。 */
+    fun rankMaximum(metrics: List<IpMetric>): List<IpMetric> = metrics.sortedWith(
+        compareByDescending<IpMetric> { it.isNodeUsable }
+            .thenByDescending { !it.routeValidationRequired || it.route?.ok == true }
+            .thenByDescending { it.avgCompleteMbps }
+            .thenByDescending { it.maxCompleteMbps }
+            .thenByDescending { it.floorMbps }
+            .thenByDescending { it.fullSuccessRatePct }
             .thenBy { it.variationPct }
             .thenBy { if (it.medianTtfbMs < 0.0) Double.MAX_VALUE else it.medianTtfbMs }
             .thenBy { it.ip }

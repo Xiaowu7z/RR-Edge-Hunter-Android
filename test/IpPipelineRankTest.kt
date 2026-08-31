@@ -75,6 +75,19 @@ fun main() {
             IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.BALANCED, 100)
     )
 
+    val highAverage = metric("104.16.0.20", "LAX", floor = 45.0, avg = 110.0)
+        .copy(maxCompleteMbps = 125.0)
+    val highFloor = metric("104.16.0.21", "LAX", floor = 70.0, avg = 80.0)
+        .copy(maxCompleteMbps = 85.0)
+    check(
+        "最大带宽按复测平均下载速度选最快IP",
+        IpPipeline.rankMaximum(listOf(highFloor, highAverage)).firstOrNull()?.ip == highAverage.ip
+    )
+    check(
+        "均衡仍优先可靠下限",
+        IpPipeline.rank(listOf(highFloor, highAverage)).firstOrNull()?.ip == highFloor.ip
+    )
+
     val slowHkg = metric("104.16.0.1", "HKG", floor = 1.0, avg = 1.2)
     val fastOther = metric("104.16.0.2", "LAX", floor = 80.0, avg = 100.0)
     val asia = IpPipeline.rankAsia(listOf(slowHkg, fastOther))

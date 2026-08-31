@@ -12,7 +12,7 @@
 
 Current version: **1.0.0** (`com.xiaowu7z.cfipoptimizer`)
 
-- [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
+- [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
 - [Android releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases)
 
 Install [Obtainium](https://github.com/ImranR98/Obtainium/releases/latest), open the Add-to-Obtainium link, and confirm **CF 优选IP**. If the link does not open, add this repository manually:

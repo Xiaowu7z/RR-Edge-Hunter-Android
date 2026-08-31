@@ -20,9 +20,9 @@
 
 ### Obtainium 自动更新
 
-[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20IP%20Optimizer%22%7D)
+[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
 
-按钮采用与 RR Edge Atlas 相同的 Obtainium 最小官方配置，不携带正则表达式或嵌套高级参数。打开后只需确认添加，Obtainium 会从仓库唯一的正式 APK 自动更新 **CF 优选IP**。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
+按钮改用 Obtainium 官方的 `obtainium://add/<仓库地址>` 简单深链，不再传递 JSON、正则表达式或百分号编码，因此避开部分手机出现的 URI 编码错误。打开后确认添加即可；仓库只有一个正式 APK，Obtainium 会自动选择 **CF 优选IP**。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android

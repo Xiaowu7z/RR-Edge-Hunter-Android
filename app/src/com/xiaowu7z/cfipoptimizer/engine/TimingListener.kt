@@ -11,7 +11,8 @@ import java.net.InetSocketAddress
  */
 class ProbeTimingListener(
     private val onEvent: (String) -> Unit,
-    private val onTimings: (Timings) -> Unit
+    private val onTimings: (Timings) -> Unit,
+    private val onConnect: (InetAddress?) -> Unit = {}
 ) : EventListener() {
 
     data class Timings(
@@ -63,6 +64,7 @@ class ProbeTimingListener(
         t.connectStartNs = System.nanoTime()
         t.actualRemoteAddr = inetSocketAddress.address
         t.actualRemoteAddress = inetSocketAddress.address?.hostAddress ?: ""
+        onConnect(inetSocketAddress.address)
         onEvent("connectStart ${t.actualRemoteAddress}:${inetSocketAddress.port}")
     }
 

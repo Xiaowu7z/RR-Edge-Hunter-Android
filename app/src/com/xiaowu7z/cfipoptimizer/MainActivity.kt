@@ -16,7 +16,6 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -25,6 +24,7 @@ import android.widget.TextView
 import android.widget.Toast
 import com.xiaowu7z.cfipoptimizer.engine.AuthorizedHost
 import com.xiaowu7z.cfipoptimizer.engine.AuthorizedHostSnapshot
+import com.xiaowu7z.cfipoptimizer.engine.CandidatePool
 import com.xiaowu7z.cfipoptimizer.engine.CfRanges
 import com.xiaowu7z.cfipoptimizer.engine.IpMetric
 import com.xiaowu7z.cfipoptimizer.engine.IpPipeline
@@ -40,9 +40,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * CF 优选IP is intentionally a safe, IP-native diagnostic UI. Imported IPs are
- * filters only: a run can use only the current DNS allocation of the confirmed
- * test host, never an arbitrary IP route override.
+ * CF 优选IP ranks Cloudflare entry addresses for an existing Argo node. The
+ * selected IP is used only as the node address/server; TLS SNI, HTTP Host and
+ * certificate verification always remain bound to the user's Argo hostname.
  */
 class MainActivity : Activity() {
     companion object { private const val REQUEST_OPEN_IP_FILE = 711 }
@@ -68,7 +68,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var protocolSummary: TextView
     private lateinit var testHost: EditText
-    private lateinit var authorized: CheckBox
+    private lateinit var wsPathInput: EditText
     private lateinit var customPanel: LinearLayout
     private lateinit var customIpsInput: EditText
     private lateinit var subscriptionInput: EditText
@@ -87,7 +87,7 @@ class MainActivity : Activity() {
     private var protocol = "双栈"
     private var strategy = "均衡"
     private var operatorLabel = "自动"
-    private var source = "当前 DNS"
+    private var source = "Argo优选"
     private var importedIps: List<String> = emptyList()
     private var importDescription = "尚未导入"
     private var appliedInput = ""
@@ -170,8 +170,23 @@ class MainActivity : Activity() {
             addView(label("CF 优选IP", 25f, primary, true)); addView(label("RR Edge Hunter · Android 1.0.0", 12f, muted))
         })
         root.addView(brand)
-        root.addView(label("只诊断获授权主机当前 DNS 分配的 Cloudflare IP。导入列表只能参与交集筛选，不会改路由、hosts 或 DNS 记录。", 12f, secondary).apply { setPadding(0, dp(14), 0, dp(8)) })
+        root.addView(label("为现有 Argo 节点寻找更稳定的 Cloudflare 入口 IP。IP 填入节点地址/server，原域名继续作为 SNI 与 Host。", 12f, secondary).apply { setPadding(0, dp(14), 0, dp(8)) })
         status = label("", 12f, muted); root.addView(status)
+
+        root.addPanel(12) {
+            addView(heading("Argo 节点 · 必填"))
+            addView(label("填写节点正在使用的 Cloudflare / Argo 域名，不要填写源站 IP、URL 或端口。", 11.5f, secondary))
+            testHost = input("例如 argo.example.com").apply { setSingleLine(true) }
+            addView(testHost, lp(10))
+            wsPathInput = input("WS Path（可选），例如 /vless?ed=2048").apply { setSingleLine(true) }
+            addView(wsPathInput, lp(8))
+            addView(label("留空时只验证 TLS、SNI、Host 与 Cloudflare 入口；填写后会额外执行严格 WebSocket 101 握手。", 11f, muted).apply { setPadding(0, dp(7), 0, 0) })
+            addView(segmented(listOf("Argo优选", "当前DNS"), listOf("一键优选（推荐）", "当前 DNS 体检"), "Argo优选") {
+                source = it; customPanel.visibility = View.GONE; refreshStatus()
+            }, lp(12))
+            addView(label("一键优选会组合当前 DNS、CF 官方网段受控抽样与已导入 IP 池；当前 DNS 体检只检查域名现有入口。", 11f, warn).apply { setPadding(0, dp(7), 0, 0) })
+            addView(label("点击开始即表示你确认有权使用并测试该 Argo 节点。", 10.5f, muted).apply { setPadding(0, dp(7), 0, 0) })
+        }
 
         root.addPanel(12) {
             addView(heading("协议族与测速策略"))
@@ -179,30 +194,15 @@ class MainActivity : Activity() {
             addView(segmented(listOf("IPv4", "IPv6", "双栈"), initial = "双栈") { protocol = it; refreshStatus() })
             addView(heading("测速策略").apply { setPadding(0, dp(16), 0, dp(8)) })
             addView(segmented(listOf("均衡", "亚洲狩猎"), initial = "均衡") { strategy = it; refreshStatus() })
-            addView(label("亚洲狩猎只基于实际 trace：HKG > NRT > SIN > ICN > TPE；同时保留速度、成功率与稳定性。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("亚洲狩猎仍以成功率与稳定速度为主，POP 只在同档成绩中加分，不会让慢速 HKG 压过高速入口。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(heading("线路标签").apply { setPadding(0, dp(16), 0, dp(8)) })
             addView(segmented(listOf("自动", "中国移动", "中国电信", "中国联通"), listOf("自动", "移动", "电信", "联通"), "自动") { operatorLabel = it; refreshStatus() })
             addView(label("标签用于历史和对比；不会模拟运营商网络或改变 IP 池。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
         }
 
         root.addPanel(12) {
-            addView(heading("测试主机与授权"))
-            addView(label("TLS SNI、Host 和证书校验始终使用这个域名；本轮只接受它当前 DNS 返回的 Cloudflare IP。", 11.5f, secondary))
-            testHost = input("例如 speed.cloudflare.com").apply { setText("speed.cloudflare.com"); setSingleLine(true) }
-            addView(testHost, lp(10))
-            authorized = CheckBox(this@MainActivity).apply {
-                text = "我确认有权对该测试主机执行连通性与吞吐诊断"; textSize = 12f; setTextColor(primary); buttonTintList = ColorStateList.valueOf(accent)
-            }
-            addView(authorized)
-            addView(label("默认是 Cloudflare 公开测速端点。改填自己的域名时，请确认它由 Cloudflare 代理且你已取得授权。", 11f, warn))
-        }
-
-        root.addPanel(12) {
-            addView(heading("候选 IP 来源"))
-            addView(segmented(listOf("当前 DNS", "导入交集"), listOf("当前 DNS", "导入列表交集"), "当前 DNS") {
-                source = it; customPanel.visibility = if (it == "导入交集") View.VISIBLE else View.GONE; refreshImportStatus(); refreshStatus()
-            })
-            addView(label("外部优选池、长复制、文件和订阅都只是过滤器：不在当前 DNS 快照中的 IP 会被拒绝。", 11.5f, muted).apply { setPadding(0, dp(8), 0, 0) })
+            addView(heading("自定义 IP 池 · 可选"))
+            addView(label("无需导入即可测试。也可长复制、上传文件或订阅社区 IP 池；只有 Cloudflare 官方 CIDR 内的地址会进入候选。", 11.5f, muted))
             customPanel = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE
                 customIpsInput = input("粘贴 IPv4 / IPv6 / IP:443 / CIDR；支持长复制", true); addView(customIpsInput, lp(12))
                 addView(primaryButton("应用粘贴内容") { applyManualIps(true) }, lp(8))
@@ -213,16 +213,20 @@ class MainActivity : Activity() {
                 addView(subscriptionButton, lp(8))
                 importStatus = label("尚未导入", 11f, muted); addView(importStatus, lp(8))
             }
+            addView(secondaryButton("添加 / 管理 IP 池") {
+                customPanel.visibility = if (customPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                refreshImportStatus()
+            }, lp(10))
             addView(customPanel)
         }
 
         root.addPanel(12) {
             addView(heading("安全边界"))
-            addView(label("• 不提供任意 IP 强制路由、代理、hosts 修改或 DNS 记录写入。", 12f, secondary))
-            addView(label("• 每次运行先建立当前 DNS 快照，再与 Cloudflare 官方网段双重校验。", 12f, secondary))
-            addView(label("• 优选结果仅支持复制与本地历史；不会把 IP 写入任何 DNS 记录。", 12f, secondary))
+            addView(label("• 候选仅限 Cloudflare 官方网段，并受总量、并发和流量上限约束。", 12f, secondary))
+            addView(label("• 每个候选都固定 IP 连接，但证书、TLS SNI 与 HTTP Host 始终使用你的 Argo 域名。", 12f, secondary))
+            addView(label("• 工具只输出节点填写参数，不改 DNS、hosts、路由或系统代理。", 12f, secondary))
         }
-        root.addView(primaryButton("开始安全 IP 测试") { preflightAndStart() }, lp(16))
+        root.addView(primaryButton("一键寻找 Argo 最优入口") { preflightAndStart() }, lp(16))
         root.addView(secondaryButton("历史记录") { showHistory() }, lp(8))
     }
 
@@ -230,7 +234,7 @@ class MainActivity : Activity() {
     private fun refreshStatus() {
         if (!::status.isInitialized) return
         val info = NetEnv.detect(this)
-        val sourceText = if (source == "当前 DNS") "当前 DNS" else "导入 ${importedIps.size} 条（交集）"
+        val sourceText = if (source == "当前DNS") "当前 DNS 体检" else "自动池${if (importedIps.isNotEmpty()) " + 导入 ${importedIps.size}" else ""}"
         status.text = "${info.label} · 线路：${effectiveOperator(info)} · 候选：$sourceText"
         protocolSummary.text = "$protocol · $strategy"
     }
@@ -238,7 +242,7 @@ class MainActivity : Activity() {
         if (!::importStatus.isInitialized) return
         when {
             error != null -> { importStatus.text = error; importStatus.setTextColor(bad) }
-            importedIps.isEmpty() -> { importStatus.text = "尚未导入；仅测试当前 DNS 快照的交集。"; importStatus.setTextColor(muted) }
+            importedIps.isEmpty() -> { importStatus.text = "尚未导入；一键优选仍会使用当前 DNS 与 CF 官方受控抽样。"; importStatus.setTextColor(muted) }
             else -> { importStatus.text = "已导入 ${importedIps.size} 个 IP · $importDescription"; importStatus.setTextColor(good) }
         }
     }
@@ -328,14 +332,16 @@ class MainActivity : Activity() {
         root.addView(secondaryButton("停止本次测试") { runningJob?.cancel() }, lp(14))
     }
     private fun preflightAndStart() {
-        if (!authorized.isChecked) { Toast.makeText(this, "请先确认你有权测试该主机", Toast.LENGTH_LONG).show(); return }
-        if (source == "导入交集" && !applyManualIps(true)) return
+        if (source == "Argo优选" && customIpsInput.text?.toString().orEmpty().isNotBlank() && !applyManualIps(true)) return
         val info = NetEnv.detect(this)
         if (info.vpnActive) showConfirm("检测到 VPN。结果将代表 VPN 出口网络，是否继续？") { launchRun(info) } else launchRun(info)
     }
     private fun launchRun(network: NetEnv.NetInfo) {
         val host = try { AuthorizedHost.normalizeHost(testHost.text?.toString().orEmpty()) } catch (e: Exception) {
-            Toast.makeText(this, e.message ?: "测试主机无效", Toast.LENGTH_LONG).show(); return
+            Toast.makeText(this, e.message ?: "Argo 域名无效", Toast.LENGTH_LONG).show(); return
+        }
+        val wsPath = try { AuthorizedHost.normalizeWsPath(wsPathInput.text?.toString().orEmpty()) } catch (e: Exception) {
+            Toast.makeText(this, e.message ?: "WS Path 无效", Toast.LENGTH_LONG).show(); return
         }
         val families = when (protocol) { "IPv4" -> listOf("IPv4"); "IPv6" -> listOf("IPv6"); else -> listOf("IPv4", "IPv6") }.filterNot { it == "IPv6" && !network.ipv6Available }
         if (families.isEmpty()) { Toast.makeText(this, "所选协议族没有可用链路", Toast.LENGTH_LONG).show(); return }
@@ -347,7 +353,7 @@ class MainActivity : Activity() {
         runningJob = scope.launch {
             try {
                 appendLog("=== $strategy / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
-                appendLog("安全模式：只测 $host 当前 DNS 快照的 Cloudflare IP；来源=$source")
+                appendLog("Argo 域名：$host；WS Path=${wsPath.ifBlank { "未填写" }}；模式=$source")
                 setStage("刷新 Cloudflare 网段"); CfRanges.refresh()
                 appendLog("Cloudflare 网段：IPv4=${if (CfRanges.v4FromOnline) "在线" else "内置备用"} / IPv6=${if (CfRanges.v6FromOnline) "在线" else "内置备用"}")
                 setStage("建立授权 DNS 快照")
@@ -358,15 +364,15 @@ class MainActivity : Activity() {
                     val candidates = selectCandidates(snapshot, family)
                     if (candidates.isEmpty()) { appendLog("$family 无安全候选，跳过"); all[family] = emptyList(); asia[family] = emptyList(); popCounts[family] = emptyMap(); return@forEachIndexed }
                     appendLog("$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params))} MB")
-                    val runResult = IpPipeline.runFamily(snapshot.host, family, candidates, params, strategy == "亚洲狩猎", { networkChanged.get() }, { state ->
+                    val runResult = IpPipeline.runFamily(snapshot.host, wsPath, family, candidates, params, strategy == "亚洲狩猎", { networkChanged.get() }, { state ->
                         val span = 92 / families.size; val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total
                         setStage("$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}"); updateProgress(idx * span + (f * span).toInt())
                     }, { appendLog("  $it") })
                     invalid = invalid || runResult.invalid; all[family] = runResult.ranked; asia[family] = runResult.asiaRanked; popCounts[family] = runResult.popCounts
                 }
                 invalid = invalid || networkChanged.get(); updateProgress(100); setStage("完成"); appendLog(if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
-                saveHistory(all, families, invalid); unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null
-                runOnUiThread { showResults(all, asia, popCounts, families, invalid) }
+                saveHistory(all, families, invalid, host, wsPath); unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null
+                runOnUiThread { showResults(all, asia, popCounts, families, invalid, host, wsPath) }
             } catch (e: CancellationException) {
                 unregisterNetworkWatch?.invoke(); unregisterNetworkWatch = null; appendLog("=== 已停止 ===")
                 runOnUiThread { switchTo(home, "home"); refreshStatus(); Toast.makeText(this@MainActivity, "测速已停止", Toast.LENGTH_SHORT).show() }; throw e
@@ -376,12 +382,13 @@ class MainActivity : Activity() {
             }
         }
     }
-    private fun selectCandidates(snapshot: AuthorizedHostSnapshot, family: String): List<IpPipeline.Candidate> = if (source == "当前 DNS") {
+    private fun selectCandidates(snapshot: AuthorizedHostSnapshot, family: String): List<IpPipeline.Candidate> = if (source == "当前DNS") {
         snapshot.forFamily(family).map { IpPipeline.Candidate(it, "当前DNS") }
     } else {
-        AuthorizedHost.intersectImported(snapshot, importedIps, family).also {
-            appendLog("$family 导入 ${it.importedCount} → DNS 交集 ${it.intersectionCount}；拒绝快照外 ${it.ignoredOutsideCurrentDns}")
-        }.candidates.map { IpPipeline.Candidate(it, "导入∩当前DNS") }
+        CandidatePool.build(snapshot, importedIps, family, includeOfficialSamples = true).also {
+            appendLog("$family 自动候选 ${it.candidates.size}；导入有效 ${it.acceptedImported}/${it.importedCount}" +
+                "；拒绝非 CF ${it.ignoredOutsideCloudflare}；跨协议族 ${it.ignoredWrongFamily}${if (it.importedSampled) "；长列表已分散抽样" else ""}")
+        }.candidates.map { IpPipeline.Candidate(it.ip, it.source) }
     }
     private fun appendLog(value: String) {
         logQueue.add(value); if (flushing.compareAndSet(false, true)) logHandler.postDelayed({ flushLogs() }, 180)
@@ -397,31 +404,49 @@ class MainActivity : Activity() {
     // ------------------------------------------ results / history
     private fun buildResult() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(30), dp(20), dp(20)); setBackgroundColor(bg) }
-        result = root; root.addView(label("结果 · IP 原生排名", 22f, primary, true))
-        root.addView(label("Full 固定 3 轮；任一失败按 0 Mbps 计入成功率、可靠下限和波动。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
+        result = root; root.addView(label("结果 · Argo 入口排名", 22f, primary, true))
+        root.addView(label("把推荐 IP 填入节点地址/server；端口、SNI、Host 与 WS Path 保持下方配置。Full 固定 3 轮，失败按 0 Mbps 计。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(primaryButton("返回首页") { switchTo(home, "home"); refreshStatus() }, lp(12))
     }
-    private fun showResults(all: Map<String, List<IpMetric>>, asia: Map<String, List<IpMetric>>, pops: Map<String, Map<String, Int>>, families: List<String>, invalid: Boolean) {
+    private fun showResults(all: Map<String, List<IpMetric>>, asia: Map<String, List<IpMetric>>, pops: Map<String, Map<String, Int>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String) {
         results.removeAllViews(); if (invalid) results.addView(label("⚠ 网络在测试中变化，结果仅供参考。", 13f, warn, true))
+        results.addView(panel {
+            addView(label("节点固定参数", 13f, primary, true))
+            addView(label("端口：443\nSNI：$argoHost\nHost：$argoHost\nPath：${wsPath.ifBlank { "保持原节点配置" }}", 12f, secondary).apply { setPadding(0, dp(6), 0, 0) })
+        }, lp(8))
         families.forEach { family ->
-            val ranked = all[family].orEmpty(); results.addView(label(if (strategy == "亚洲狩猎") "$family · 亚洲狩猎" else "$family · 完整排名", 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
+            val ranked = all[family].orEmpty()
+            val usable = ranked.filter { it.isArgoUsable }
+            val rejected = ranked.filterNot { it.isArgoUsable }
+            results.addView(label(if (strategy == "亚洲狩猎") "$family · 亚洲狩猎" else "$family · 完整排名", 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
             if (strategy == "亚洲狩猎") {
-                results.addView(label("Full trace：" + listOf("HKG", "NRT", "SIN", "ICN", "TPE").joinToString(" · ") { "$it ${pops[family]?.get(it) ?: 0}" }, 12f, secondary))
-                addMetricSection("亚洲入口综合榜", asia[family].orEmpty().take(20)); addMetricSection("全局速度榜", ranked.take(20))
-            } else addMetricSection("完整排行榜", ranked.take(20))
+                results.addView(label("Argo trace：" + listOf("HKG", "NRT", "SIN", "ICN", "TPE").joinToString(" · ") { "$it ${pops[family]?.get(it) ?: 0}" }, 12f, secondary))
+                addMetricSection("推荐榜（稳定速度优先）", asia[family].orEmpty().filter { it.isArgoUsable }.take(20), argoHost, wsPath, !invalid)
+                addMetricSection("全局速度榜", usable.take(20), argoHost, wsPath, !invalid)
+            } else addMetricSection("可用于 Argo 的入口", usable.take(20), argoHost, wsPath, !invalid)
+            if (rejected.isNotEmpty()) addMetricSection("未通过 / 未进入 Full（仅诊断）", rejected.take(12), argoHost, wsPath, false)
         }; switchTo(result, "result")
     }
-    private fun addMetricSection(title: String, metrics: List<IpMetric>) {
+    private fun addMetricSection(title: String, metrics: List<IpMetric>, argoHost: String, wsPath: String, allowCopy: Boolean) {
         results.addView(label(title, 14f, primary, true).apply { setPadding(0, dp(14), 0, dp(6)) })
-        if (metrics.isEmpty()) results.addView(label("（没有可验证的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric -> results.addView(metricCard(index, metric), lp(if (index == 0) 0 else 8)) }
+        if (metrics.isEmpty()) results.addView(label("（没有通过 Argo 域名验证且完成测速的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
+            results.addView(metricCard(index, metric, argoHost, wsPath, allowCopy && metric.isArgoUsable), lp(if (index == 0) 0 else 8))
+        }
     }
     @SuppressLint("SetTextI18n")
-    private fun metricCard(index: Int, metric: IpMetric): View = panel {
+    private fun metricCard(index: Int, metric: IpMetric, argoHost: String, wsPath: String, allowCopy: Boolean): View = panel {
         background = shape(if (index < 3) cardTop else card, 16, stroke)
         val medal = when (index) { 0 -> "🥇"; 1 -> "🥈"; 2 -> "🥉"; else -> "${index + 1}" }
-        addView(label("$medal  ${metric.ip}  ⧉", 15f, primary, true).apply { setOnClickListener { copy(metric.ip, "IP") } })
+        addView(label("$medal  ${metric.ip}${if (allowCopy) "  ⧉" else ""}", 15f, primary, true).apply {
+            if (allowCopy) setOnClickListener { copy(metric.ip, "IP") }
+        })
         addView(label("${metric.family} · ${metric.source} · Full ${metric.full.size} 轮", 11f, muted))
+        val route = metric.route
+        if (route?.ok == true) {
+            addView(label("Argo 验证：TLS/SNI/Host ✓ · trace HTTP ${route.traceHttpCode}" +
+                (if (route.wsPath.isNotEmpty()) " · WS 101 ✓" else "") , 11f, good, true))
+        } else addView(label("Argo 验证失败：${route?.error ?: "未执行"}", 11f, bad))
         addView(label("平均 ${fmt(metric.avgCompleteMbps)} Mbps · 最低 ${fmt(metric.minCompleteMbps)} Mbps · 可靠下限 ${fmt(metric.floorMbps)} Mbps", 12f, secondary).apply { setPadding(0, dp(5), 0, 0) })
         addView(label("成功率 ${fmt(metric.fullSuccessRatePct)}% · 波动 ${fmt(metric.variationPct)}% · TTFB ${if (metric.medianTtfbMs < 0) "n/a" else "${fmt(metric.medianTtfbMs)} ms"} · ${metric.stability}", 11f, secondary))
         if (metric.primaryPop.isNotBlank()) addView(label("入口：${metric.primaryPop} · 亚洲评分 ${metric.edgeScore}${if (metric.popDrift) " · POP 漂移" else ""}", 11f, if (metric.edgeScore > 0) good else secondary, metric.edgeScore > 0))
@@ -431,13 +456,21 @@ class MainActivity : Activity() {
             metric.full.isEmpty() -> addView(label("未进入 Full 固定轮次；已按 0 计入。", 10.5f, warn))
             metric.full.any { !it.ok } -> addView(label("含失败轮次，已按 0 Mbps 计入。", 10.5f, warn))
         }
-        addView(secondaryButton("复制 IP") { copy(metric.ip, "IP") }, lp(8))
+        if (allowCopy) {
+            val summary = nodeConfigSummary(metric.ip, argoHost, wsPath)
+            addView(secondaryButton("复制 IP") { copy(metric.ip, "IP") }, lp(8))
+            addView(primaryButton("复制 Argo 节点填写参数") { copy(summary, "Argo 节点参数") }, lp(8))
+        } else addView(label("此项不可作为节点地址复制。", 10.5f, warn).apply { setPadding(0, dp(8), 0, 0) })
     }
+    private fun nodeConfigSummary(ip: String, argoHost: String, wsPath: String): String =
+        "地址/server：$ip\n端口：443\nSNI：$argoHost\nHost：$argoHost\nPath：${wsPath.ifBlank { "保持原节点配置" }}"
     private fun fmt(value: Double) = "%.1f".format(value)
-    private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean) {
+    private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String) {
         try {
-            val list = all[families.firstOrNull()].orEmpty(); val winner = list.firstOrNull(); val net = NetEnv.detect(this)
-            HistoryStore.save(filesDir, HistoryStore.HistoryEntry(System.currentTimeMillis(), System.currentTimeMillis(), strategy, families.joinToString("+"), net.label, net.vpnActive, invalid, net.wifiSsid, effectiveOperator(net), net.phoneModel, winner?.ip.orEmpty(), winner?.let { fmt(it.avgCompleteMbps) }.orEmpty(), if (invalid) "网络变化，仅供参考" else "IP 原生固定多轮结果", list.take(50).mapIndexed { i, m ->
+            val list = if (invalid) emptyList() else IpPipeline.rank(all.values.flatten().filter { it.isArgoUsable })
+            val winner = list.firstOrNull(); val net = NetEnv.detect(this)
+            val verdict = "$argoHost · Path ${wsPath.ifBlank { "保持原配置" }} · " + if (invalid) "网络变化，结果不可用于节点" else "Argo 入口固定多轮结果"
+            HistoryStore.save(filesDir, HistoryStore.HistoryEntry(System.currentTimeMillis(), System.currentTimeMillis(), strategy, families.joinToString("+"), net.label, net.vpnActive, invalid, net.wifiSsid, effectiveOperator(net), net.phoneModel, winner?.ip.orEmpty(), winner?.let { fmt(it.avgCompleteMbps) }.orEmpty(), verdict, list.take(50).mapIndexed { i, m ->
                 HistoryStore.ResultLine(i + 1, m.ip, fmt(m.avgCompleteMbps), fmt(m.minCompleteMbps), fmt(m.floorMbps), "${fmt(m.fullSuccessRatePct)}%", "${fmt(m.variationPct)}%", if (m.medianTtfbMs < 0) "" else fmt(m.medianTtfbMs), m.stability, false, m.primaryPop)
             }))
         } catch (_: Exception) { appendLog("历史保存失败") }

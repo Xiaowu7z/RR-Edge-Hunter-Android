@@ -18,6 +18,13 @@ fun main() {
     fails("拒绝 URL 测试主机") { AuthorizedHost.normalizeHost("https://speed.cloudflare.com") }
     fails("拒绝带端口测试主机") { AuthorizedHost.normalizeHost("speed.cloudflare.com:443") }
     fails("拒绝四段纯数字伪主机") { AuthorizedHost.normalizeHost("001.002.003.004") }
+    check("WS Path 可留空", AuthorizedHost.normalizeWsPath("  ").isEmpty())
+    check("WS Path 保留查询参数", AuthorizedHost.normalizeWsPath("/vless?ed=2048") == "/vless?ed=2048")
+    fails("WS Path 必须以斜杠开头") { AuthorizedHost.normalizeWsPath("vless") }
+    fails("WS Path 拒绝协议相对主机") { AuthorizedHost.normalizeWsPath("//evil.example/x") }
+    fails("WS Path 拒绝换行") { AuthorizedHost.normalizeWsPath("/ok\nInjected: x") }
+    fails("WS Path 拒绝畸形百分号转义") { AuthorizedHost.normalizeWsPath("/vless%2") }
+    fails("WS Path 百分号转义只接受 ASCII 十六进制") { AuthorizedHost.normalizeWsPath("/vless%２F") }
     check("已知 Cloudflare 网段允许", CfRanges.isCloudflare(InetAddress.getByName("104.16.0.1")))
     check("非 Cloudflare 地址不在回退网段", !CfRanges.isCloudflare(InetAddress.getByName("1.1.1.1")))
 

@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.coroutines.coroutineContext
 import kotlin.math.round
+import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
 
 /** A native-IP result.  Every Full failure is retained as 0 Mbps. */
@@ -15,6 +16,7 @@ data class IpMetric(
     val ip: String,
     val family: String,
     val source: String,
+    val route: ProbeEngine.ArgoRouteResult? = null,
     val pre: ProbeEngine.ProbeResult? = null,
     val micro: ProbeEngine.ProbeResult? = null,
     val full: List<ProbeEngine.ProbeResult> = emptyList(),
@@ -29,6 +31,9 @@ data class IpMetric(
     val popDrift: Boolean = false,
     val edgeScore: Int = 0
 ) {
+    // A single lucky success is not enough for a Telegram/video recommendation.
+    // With the fixed three Full rounds this requires at least two successes.
+    val isArgoUsable: Boolean get() = route?.ok == true && full.isNotEmpty() && fullSuccessRatePct >= 66.0
     val stability: String get() = when {
         fullSuccessRatePct >= 90.0 && variationPct <= 15.0 -> "优秀"
         fullSuccessRatePct >= 75.0 && variationPct <= 30.0 -> "良好"
@@ -40,12 +45,13 @@ data class IpMetric(
 /**
  * IP-native staged runner.
  *
- * The only accepted candidates are supplied by [AuthorizedHost] after the
- * imported list has been intersected with the current DNS allocation.  This
- * runner intentionally has no range expansion, arbitrary host override, proxy
- * or DNS-record writing capability.
+ * Every candidate is first fixed to the user's Argo hostname and must pass
+ * normal TLS hostname verification. Throughput is then measured against
+ * speed.cloudflare.com on the same IP because an Argo hostname does not expose
+ * Cloudflare's /__down endpoint.
  */
 object IpPipeline {
+    private const val ROUTE_TIMEOUT_SECONDS = 8
     private const val PRE_TIMEOUT_SECONDS = 8
     private const val MICRO_TIMEOUT_SECONDS = 12
     private const val FULL_TIMEOUT_SECONDS = 30
@@ -63,26 +69,26 @@ object IpPipeline {
     )
 
     val BALANCED = ModeParams(
-        preBytes = 128_000L,
-        microBytes = 1_000_000L,
-        fullBytes = 8_000_000L,
-        microLimit = 16,
-        finalLimit = 8,
+        preBytes = 64_000L,
+        microBytes = 512_000L,
+        fullBytes = 2_000_000L,
+        microLimit = 12,
+        finalLimit = 5,
         fullRounds = 3,
-        preConcurrency = 8,
-        microConcurrency = 4,
+        preConcurrency = 6,
+        microConcurrency = 3,
         fullConcurrency = 1
     )
 
     val ASIA_HUNT = ModeParams(
-        preBytes = 96_000L,
-        microBytes = 1_000_000L,
-        fullBytes = 8_000_000L,
-        microLimit = 24,
-        finalLimit = 12,
+        preBytes = 64_000L,
+        microBytes = 512_000L,
+        fullBytes = 2_000_000L,
+        microLimit = 16,
+        finalLimit = 6,
         fullRounds = 3,
-        preConcurrency = 8,
-        microConcurrency = 4,
+        preConcurrency = 6,
+        microConcurrency = 3,
         fullConcurrency = 1
     )
 
@@ -116,7 +122,8 @@ object IpPipeline {
     }
 
     suspend fun runFamily(
-        testHost: String,
+        argoHost: String,
+        wsPath: String,
         family: String,
         candidates: List<Candidate>,
         params: ModeParams,
@@ -125,18 +132,49 @@ object IpPipeline {
         onStage: (Stage) -> Unit = {},
         log: (String) -> Unit = {}
     ): FamilyResult = coroutineScope {
+        val familyLimit = if (family == "IPv6") CandidatePool.MAX_V6_CANDIDATES else CandidatePool.MAX_V4_CANDIDATES
         val deduped = candidates
             .filter { ProbeEngine.familyOf(it.ip) == family }
+            .filter { candidate ->
+                try { CfRanges.isCloudflare(InetAddress.getByName(candidate.ip)) } catch (_: Exception) { false }
+            }
             .distinctBy { it.ip }
+            .take(familyLimit)
         if (deduped.isEmpty()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap())
 
         fun checkNetwork(): Boolean = networkInvalid().also {
             if (it) log("网络环境已变化，本轮结果作废")
         }
 
-        onStage(Stage("预检", 0, deduped.size))
+        onStage(Stage("Argo 入口兼容验证", 0, deduped.size))
+        val routeDone = AtomicInteger(0)
+        val routeResults = parallel(deduped, params.preConcurrency) { candidate ->
+            coroutineContext.ensureActive()
+            if (checkNetwork()) {
+                candidate to ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidate.ip, error = "网络变化")
+            } else {
+                val result = ProbeEngine.probeArgoRoute(
+                    targetIp = candidate.ip,
+                    argoHost = argoHost,
+                    wsPath = wsPath,
+                    timeoutSec = ROUTE_TIMEOUT_SECONDS,
+                    log = log
+                )
+                onStage(Stage("Argo 入口兼容验证", routeDone.incrementAndGet(), deduped.size))
+                candidate to result
+            }
+        }.toMap()
+        if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
+
+        val routeEligible = deduped.filter { routeResults[it]?.ok == true }
+        if (routeEligible.isEmpty()) {
+            val failures = deduped.map { metric(it, routeResults[it], null, null, emptyList()) }
+            return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
+        }
+
+        onStage(Stage("边缘速度预检", 0, routeEligible.size))
         val preDone = AtomicInteger(0)
-        val preResults = parallel(deduped, params.preConcurrency) { candidate ->
+        val preResults = parallel(routeEligible, params.preConcurrency) { candidate ->
             coroutineContext.ensureActive()
             if (checkNetwork()) {
                 candidate to failed(candidate.ip, "网络变化")
@@ -145,22 +183,22 @@ object IpPipeline {
                     targetIp = candidate.ip,
                     bytes = params.preBytes,
                     timeoutSec = PRE_TIMEOUT_SECONDS,
-                    testHost = testHost,
-                    includeTrace = asiaHunt,
+                    testHost = ProbeEngine.SPEED_HOST,
+                    includeTrace = false,
                     log = log
                 )
-                onStage(Stage("预检", preDone.incrementAndGet(), deduped.size))
+                onStage(Stage("边缘速度预检", preDone.incrementAndGet(), routeEligible.size))
                 candidate to result
             }
         }.toMap()
         if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
-        val preEligible = deduped.filter { preResults[it]?.ok == true }
+        val preEligible = routeEligible.filter { preResults[it]?.ok == true }
         if (preEligible.isEmpty()) {
-            val failures = deduped.map { metric(it, preResults[it], null, emptyList()) }
+            val failures = deduped.map { metric(it, routeResults[it], preResults[it], null, emptyList()) }
             return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
         }
-        val microCandidates = chooseForMicro(preEligible, preResults, params.microLimit, asiaHunt)
+        val microCandidates = chooseForMicro(preEligible, preResults, routeResults, params.microLimit, asiaHunt)
 
         onStage(Stage("小流量筛选", 0, microCandidates.size))
         val microDone = AtomicInteger(0)
@@ -173,7 +211,7 @@ object IpPipeline {
                     targetIp = candidate.ip,
                     bytes = params.microBytes,
                     timeoutSec = MICRO_TIMEOUT_SECONDS,
-                    testHost = testHost,
+                    testHost = ProbeEngine.SPEED_HOST,
                     includeTrace = false,
                     log = log
                 )
@@ -183,13 +221,13 @@ object IpPipeline {
         }.toMap()
         if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
-        val finalCandidates = chooseForFull(microCandidates, preResults, microResults, params.finalLimit, asiaHunt)
+        val finalCandidates = chooseForFull(microCandidates, preResults, microResults, routeResults, params.finalLimit, asiaHunt)
         if (finalCandidates.isEmpty()) {
             // Keep every original candidate visible.  Candidates rejected by a
             // staged gate have no Full samples and therefore carry a zero score
             // instead of quietly disappearing from the audit trail.
             val metrics = deduped.map { candidate ->
-                metric(candidate, preResults[candidate], microResults[candidate], emptyList())
+                metric(candidate, routeResults[candidate], preResults[candidate], microResults[candidate], emptyList())
             }
             return@coroutineScope FamilyResult(rank(metrics), rankAsia(metrics), emptyMap())
         }
@@ -212,8 +250,8 @@ object IpPipeline {
                     targetIp = candidate.ip,
                     bytes = params.fullBytes,
                     timeoutSec = FULL_TIMEOUT_SECONDS,
-                    testHost = testHost,
-                    includeTrace = true,
+                    testHost = ProbeEngine.SPEED_HOST,
+                    includeTrace = false,
                     log = log
                 )
                 onStage(Stage("完整测速（固定 ${params.fullRounds} 轮）", fullDone.incrementAndGet(), schedule.size))
@@ -228,22 +266,23 @@ object IpPipeline {
         // is evidence too; its empty Full series remains an explicit zero in
         // the result rather than being silently dropped.
         val metrics = deduped.map { candidate ->
-            metric(candidate, preResults[candidate], microResults[candidate], perIpFull[candidate.ip].orEmpty())
+            metric(candidate, routeResults[candidate], preResults[candidate], microResults[candidate], perIpFull[candidate.ip].orEmpty())
         }
         val pops = LinkedHashMap<String, Int>()
-        metrics.flatMap { it.full }.filter { it.ok && it.colo.isNotBlank() }
-            .forEach { pops[it.colo.uppercase()] = (pops[it.colo.uppercase()] ?: 0) + 1 }
+        metrics.mapNotNull { it.route?.takeIf { route -> route.ok && route.colo.isNotBlank() }?.colo }
+            .forEach { pop -> pops[pop.uppercase()] = (pops[pop.uppercase()] ?: 0) + 1 }
         FamilyResult(rank(metrics), rankAsia(metrics), pops)
     }
 
     private fun chooseForMicro(
         candidates: List<Candidate>,
         pre: Map<Candidate, ProbeEngine.ProbeResult>,
+        route: Map<Candidate, ProbeEngine.ArgoRouteResult>,
         limit: Int,
         asiaHunt: Boolean
     ): List<Candidate> = candidates.sortedWith(
-        compareByDescending<Candidate> { if (asiaHunt) popPriority(pre[it]?.colo.orEmpty()) else 0 }
-            .thenByDescending { pre[it]?.completeTransferMbps ?: 0.0 }
+        compareByDescending<Candidate> { pre[it]?.completeTransferMbps ?: 0.0 }
+            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty()) else 0 }
             .thenBy { it.ip }
     ).take(limit)
 
@@ -251,11 +290,12 @@ object IpPipeline {
         candidates: List<Candidate>,
         pre: Map<Candidate, ProbeEngine.ProbeResult>,
         micro: Map<Candidate, ProbeEngine.ProbeResult>,
+        route: Map<Candidate, ProbeEngine.ArgoRouteResult>,
         limit: Int,
         asiaHunt: Boolean
     ): List<Candidate> = candidates.filter { micro[it]?.ok == true }.sortedWith(
-        compareByDescending<Candidate> { if (asiaHunt) popPriority(pre[it]?.colo.orEmpty()) else 0 }
-            .thenByDescending { micro[it]?.completeTransferMbps ?: 0.0 }
+        compareByDescending<Candidate> { micro[it]?.completeTransferMbps ?: 0.0 }
+            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty()) else 0 }
             .thenBy { it.ip }
     ).take(limit)
 
@@ -263,6 +303,7 @@ object IpPipeline {
 
     private fun metric(
         candidate: Candidate,
+        route: ProbeEngine.ArgoRouteResult?,
         pre: ProbeEngine.ProbeResult?,
         micro: ProbeEngine.ProbeResult?,
         full: List<ProbeEngine.ProbeResult>
@@ -277,7 +318,7 @@ object IpPipeline {
         val floor = if (full.isEmpty() || full.any { !it.ok }) 0.0 else min
         val variation = variation(speeds)
         val ttfb = median(full.filter { it.ok }.map { it.ttfbMs })
-        val pops = full.filter { it.ok }.map { it.colo.uppercase() }.filter { it.isNotBlank() }
+        val pops = listOfNotNull(route?.takeIf { it.ok }?.colo?.uppercase()).filter { it.isNotBlank() }
         val primary = pops.groupingBy { it }.eachCount().entries
             .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenByDescending { popPriority(it.key) })
             .firstOrNull()?.key.orEmpty()
@@ -287,6 +328,7 @@ object IpPipeline {
             ip = candidate.ip,
             family = ProbeEngine.familyOf(candidate.ip) ?: "未知",
             source = candidate.source,
+            route = route,
             pre = pre,
             micro = micro,
             full = full,
@@ -304,7 +346,9 @@ object IpPipeline {
     }
 
     fun rank(metrics: List<IpMetric>): List<IpMetric> = metrics.sortedWith(
-        compareByDescending<IpMetric> { it.floorMbps }
+        compareByDescending<IpMetric> { it.isArgoUsable }
+            .thenByDescending { it.route?.ok == true }
+            .thenByDescending { it.floorMbps }
             .thenByDescending { it.fullSuccessRatePct }
             .thenByDescending { it.minCompleteMbps }
             .thenByDescending { it.avgCompleteMbps }
@@ -314,12 +358,16 @@ object IpPipeline {
     )
 
     fun rankAsia(metrics: List<IpMetric>): List<IpMetric> = metrics.sortedWith(
-        compareByDescending<IpMetric> { it.edgeScore }
-            .thenBy { it.popDrift }
+        compareByDescending<IpMetric> { it.isArgoUsable }
+            .thenByDescending { it.route?.ok == true }
             .thenByDescending { it.floorMbps }
             .thenByDescending { it.fullSuccessRatePct }
+            .thenByDescending { it.minCompleteMbps }
             .thenByDescending { it.avgCompleteMbps }
             .thenBy { it.variationPct }
+            .thenByDescending { it.edgeScore }
+            .thenBy { it.popDrift }
+            .thenBy { if (it.medianTtfbMs < 0.0) Double.MAX_VALUE else it.medianTtfbMs }
             .thenBy { it.ip }
     )
 

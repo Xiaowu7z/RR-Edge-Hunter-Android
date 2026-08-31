@@ -7,13 +7,12 @@ import java.net.InetAddress
 import java.util.Locale
 
 /**
- * A per-run, immutable DNS snapshot for the test host.
+ * A per-run, immutable DNS snapshot for the Argo hostname.
  *
- * RR Edge Hunter deliberately does not turn an arbitrary IP list into a route
- * override.  A candidate can be measured only when it is both (a) currently
- * returned by the user-authorized test hostname and (b) inside Cloudflare's
- * published network ranges.  The snapshot is established once immediately
- * before a run so all stages compare the same allocation.
+ * The snapshot proves that the hostname is currently proxied by Cloudflare and
+ * provides trusted seed addresses. Argo 优选模式 may additionally evaluate a
+ * bounded set of addresses from Cloudflare's published ranges while preserving
+ * this hostname as TLS SNI and HTTP Host.
  */
 data class AuthorizedHostSnapshot(
     val host: String,
@@ -64,6 +63,24 @@ object AuthorizedHost {
         return raw
     }
 
+    /** Optional WebSocket path used only for an Argo compatibility handshake. */
+    fun normalizeWsPath(value: String): String {
+        val raw = value.trim()
+        if (raw.isEmpty()) return ""
+        if (raw.length > 1024 || !raw.startsWith('/') || raw.startsWith("//") ||
+            raw.any { it.isWhitespace() || it.code < 0x20 } || raw.contains('#') || raw.contains('\\')) {
+            throw IllegalArgumentException("WS Path 必须以 / 开头，可留空并保持原节点配置")
+        }
+        fun asciiHex(char: Char): Boolean = char in '0'..'9' || char in 'a'..'f' || char in 'A'..'F'
+        raw.forEachIndexed { index, char ->
+            if (char == '%' && (index + 2 >= raw.length ||
+                    !asciiHex(raw[index + 1]) || !asciiHex(raw[index + 2]))) {
+                throw IllegalArgumentException("WS Path 含有无效的 % 转义")
+            }
+        }
+        return raw
+    }
+
     /** Resolves actual current Cloudflare addresses for the selected host. */
     fun snapshot(hostInput: String, log: (String) -> Unit = {}): AuthorizedHostSnapshot {
         val host = normalizeHost(hostInput)
@@ -92,11 +109,7 @@ object AuthorizedHost {
         return AuthorizedHostSnapshot(host, v4.toList(), v6.toList())
     }
 
-    /**
-     * Converts a user's imported list into a safe candidate list.  Nothing
-     * outside [snapshot] may pass this boundary; callers must not fall back to
-     * imported values when the intersection is empty.
-     */
+    /** Legacy/current-DNS diagnostic helper. Argo 优选 uses [CandidatePool]. */
     fun intersectImported(
         snapshot: AuthorizedHostSnapshot,
         imported: Collection<String>,

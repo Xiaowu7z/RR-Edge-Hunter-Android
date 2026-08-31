@@ -2,6 +2,7 @@ package com.xiaowu7z.cfipoptimizer.engine
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.math.BigInteger
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -154,5 +155,65 @@ object CfRanges {
             else -> emptyList()
         }
         return ranges.any { inCidr(addr, it) }
+    }
+
+    /**
+     * 从每个 Cloudflare 官方网段中确定性、均匀地抽取少量地址。
+     *
+     * 这里不会展开整个 CIDR，也不会随机扫描互联网。调用方仍须使用获授权
+     * 域名的 SNI/Host 与系统证书校验逐个确认候选是否适合该 Argo 节点。
+     */
+    fun sampleOfficial(family: String, perRange: Int = 2, limit: Int = 64): List<String> {
+        if (perRange <= 0 || limit <= 0) return emptyList()
+        val ranges = when (family) {
+            "IPv4" -> rangesV4
+            "IPv6" -> rangesV6
+            else -> return emptyList()
+        }
+        val result = LinkedHashSet<String>()
+        for (cidr in ranges) {
+            val parts = cidr.split('/')
+            if (parts.size != 2) continue
+            val networkAddress = try { InetAddress.getByName(parts[0]) } catch (_: Exception) { continue }
+            val bits = when (networkAddress) {
+                is Inet4Address -> 32
+                is Inet6Address -> 128
+                else -> continue
+            }
+            if ((family == "IPv4" && bits != 32) || (family == "IPv6" && bits != 128)) continue
+            val prefix = parts[1].toIntOrNull() ?: continue
+            if (prefix !in 0..bits) continue
+            val span = BigInteger.ONE.shiftLeft(bits - prefix)
+            val skipEdges = bits == 32 && bits - prefix >= 2
+            val first = if (skipEdges) BigInteger.ONE else BigInteger.ZERO
+            val last = span.subtract(if (skipEdges) BigInteger.valueOf(2L) else BigInteger.ONE)
+            if (last < first) continue
+            val usable = last.subtract(first).add(BigInteger.ONE)
+            val count = minOf(perRange, if (usable > BigInteger.valueOf(Int.MAX_VALUE.toLong())) perRange else usable.toInt())
+            val network = BigInteger(1, networkAddress.address)
+            repeat(count) { index ->
+                // IPv4 uses interior quantiles. For very broad IPv6 allocations,
+                // stay near the published network prefix instead of inventing a
+                // random-looking address deep in the /32. Every result is still
+                // only an experimental candidate until SNI/TLS route validation.
+                val offset = if (bits == 128) {
+                    BigInteger.valueOf((index + 1).toLong())
+                        .coerceAtMost(usable.subtract(BigInteger.ONE))
+                } else {
+                    val numerator = usable.multiply(BigInteger.valueOf((index + 1).toLong()))
+                    numerator.divide(BigInteger.valueOf((count + 1).toLong()))
+                        .coerceAtMost(usable.subtract(BigInteger.ONE))
+                }
+                val value = network.add(first).add(offset)
+                val bytes = ByteArray(bits / 8)
+                val raw = value.toByteArray()
+                val copyLength = minOf(raw.size, bytes.size)
+                System.arraycopy(raw, raw.size - copyLength, bytes, bytes.size - copyLength, copyLength)
+                val address = try { InetAddress.getByAddress(bytes) } catch (_: Exception) { null } ?: return@repeat
+                if (isCloudflare(address)) result.add(address.hostAddress.substringBefore('%').lowercase())
+            }
+            if (result.size >= limit) break
+        }
+        return result.take(limit)
     }
 }

@@ -4,7 +4,7 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** is the Android member of the RR Edge Hunter family. It evaluates Cloudflare IPs that are actually assigned by DNS for a host the user is authorized to test, on the current Android device and network.
+**CF 优选IP** is the Android Argo-entry selector in the RR Edge Hunter family. Given an existing Argo hostname, it evaluates bounded candidates from current DNS, Cloudflare-published ranges, and an optional imported pool. The selected IP goes in the node's `address/server` field while the original hostname remains TLS SNI and HTTP Host.
 
 > Results apply only to the current device, egress network, and test run. Test again after changing carrier, Wi-Fi, VPN, proxy, or network egress.
 
@@ -15,6 +15,12 @@ Current version: **1.0.0** (`com.xiaowu7z.cfipoptimizer`)
 [⬇️ **Download and install the latest CF 优选IP (recommended)**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk)
 
 This is one universal APK. Download it and follow Android's installation prompt—there is no CPU architecture, release, or advanced-setting choice. On the first install, allow your browser to install apps if Android asks.
+
+### Testing channel
+
+[🧪 **Manually download the current testing APK**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/download/testing/CF-IP-Optimizer-testing.apk)
+
+The testing APK and stable release intentionally remain at version **1.0.0**, so automatic updaters will not see it as a newer version. Download and install it manually over the existing app. It uses the same release signature and does not replace the stable `latest` link above.
 
 ### Automatic updates (optional)
 
@@ -39,32 +45,34 @@ Every stable release includes `CF-IP-Optimizer.apk.sha256`; see [all Releases](h
 
 - Carrier profiles: Auto, China Mobile, China Telecom, and China Unicom.
 - Independent IPv4, IPv6, and dual-stack modes.
-- Balanced and Asia-hunting strategies, using measured POP evidence such as HKG, NRT, SIN, ICN, and TPE.
+- Balanced and Asia-hunting strategies; reliability and stable throughput remain primary, while POP evidence such as HKG, NRT, SIN, ICN, and TPE is only a tie-breaker.
 - Pre, Micro, and Full staged tests with repeat checks for success rate, latency, TTFB, transfer performance, and variance; failed samples count as zero in ranking.
-- Current-DNS candidates plus custom paste, file, or subscription intersection filters; IPv4, IPv6, CIDR, TXT, CSV, TSV, JSON, and Base64 are supported.
-- Inspectable IPv4/IPv6, source, DNS snapshot, POP, and result evidence; copy support.
+- One-click mode combines current DNS seeds, bounded samples from official Cloudflare CIDRs, and optional pasted/file/HTTPS-subscription pools. A current-DNS-only diagnostic remains available.
+- Each candidate must pass normal certificate, SNI/Host, remote-peer, and Argo trace checks; an optional WS Path requires a complete WebSocket 101 handshake.
+- Copy either the IP or a complete node-field summary: address/server, port 443, SNI, Host, and Path.
 - Up to 50 local history entries.
 
 The app requests only Internet and network-state permissions. File import uses Android's system document picker and does not request broad storage access.
 
 ## Candidate and test boundary
 
-This is not an Internet-wide scanner. For each run, the app takes a current DNS snapshot of a host the user is authorized to test. The only eligible targets are Cloudflare IPs actually assigned by that DNS snapshot.
+This is not an Internet-wide scanner. Each run first snapshots a user-authorized Argo hostname to verify Cloudflare proxying and obtain trusted seeds. One-click mode can add a small deterministic sample from Cloudflare-published CIDRs and imported candidates, with a hard limit per address family.
 
-- Built-in candidates must satisfy both the current DNS snapshot and allowed Cloudflare ranges.
-- Custom IPs, CIDRs, files, and subscriptions are intersected with the current DNS results. Addresses outside that intersection are rejected rather than force-connected.
+- Imported candidates do not have to appear in the hostname's current DNS answers, but every target must be inside an official Cloudflare CIDR.
+- The final pool is capped at 48 IPv4 and 24 IPv6 candidates; long imported lists are deterministically spread-sampled.
 - IPv4 and IPv6 are validated and reported independently.
-- SNI, Host, and TLS certificate validation remain intact; the app never disguises an arbitrary address as an authorized host.
+- The app temporarily fixes each candidate IP for the Argo hostname while retaining its SNI, Host, and platform TLS certificate verification.
+- Because an Argo hostname normally lacks `speed.cloudflare.com`'s `/__down`, Argo compatibility is validated with the user's hostname while staged throughput uses the public Cloudflare speed host on the same candidate IP.
 
 The app does not provide or perform arbitrary forced routing, `hosts` changes, DNS record writes of any kind, proxy configuration, port scanning, vulnerability testing, stress testing, or access-control bypass.
 
 ## Custom IP input
 
-Use Import-list intersection to paste addresses, import a local file, or fetch an IP subscription. Entries are normalized and deduplicated, with valid, ignored, IPv4, IPv6, and CIDR counts shown to the user.
+Open Add/manage IP pool to paste addresses, import a local file, or fetch an IP subscription. Entries are normalized and deduplicated, with valid, ignored, IPv4, IPv6, and CIDR counts shown to the user.
 
 CIDR expansion, candidate count, file size, and subscription size are bounded. Subscriptions accept only public **HTTPS** targets on the default `443` port; every redirect is revalidated and each connection is pinned to a validated public IP.
 
-Importing an address does not make it eligible. Every custom item must still intersect with the current DNS snapshot and pass the Cloudflare-range check.
+Importing an address does not make it eligible. It must pass the official-range, family, Argo TLS/route, actual-peer, and bounded-pool checks.
 
 ## Build and verification
 
@@ -78,6 +86,6 @@ JDK 17 and Android SDK 34 are required:
 
 ## Scope
 
-Use this project only to assess Cloudflare IPs that are currently assigned by DNS for hosts and networks you own or are explicitly authorized to test. Follow applicable law, provider policies, and service terms.
+Use this project only to assess official Cloudflare entry IPs for Argo nodes you own or are explicitly authorized to use and test. Follow applicable law, provider policies, and service terms.
 
 Cloudflare, Android, and other marks belong to their respective owners. This is an independent, unofficial project and is not affiliated with, sponsored by, or endorsed by those providers. See [NOTICE.md](NOTICE.md).

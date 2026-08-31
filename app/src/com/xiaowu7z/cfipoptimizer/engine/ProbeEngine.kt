@@ -9,6 +9,9 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.Proxy
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -60,6 +63,28 @@ object ProbeEngine {
         val events: String = ""
     )
 
+    /**
+     * Candidate compatibility proof for an Argo hostname. TLS hostname
+     * verification is OkHttp's system default and is never disabled.
+     */
+    data class ArgoRouteResult(
+        val ok: Boolean,
+        val error: String = "",
+        val targetIp: String = "",
+        val sni: String = "",
+        val hostHeader: String = "",
+        val certVerified: Boolean = false,
+        val targetMatchesRemote: Boolean = false,
+        val actualRemoteAddress: String = "",
+        val traceHttpCode: Int = 0,
+        val wsPath: String = "",
+        val wsHttpCode: Int = 0,
+        val websocketAccepted: Boolean = false,
+        val ttfbMs: Double = -1.0,
+        val colo: String = "",
+        val loc: String = ""
+    )
+
     /** IP literal 校验：必须是 IPv4 或 IPv6 字面量，禁止 hostname。 */
     fun isIpLiteral(input: String): Boolean {
         if (input.isEmpty()) return false
@@ -107,6 +132,9 @@ object ProbeEngine {
         includeTrace: Boolean = true,
         log: (String) -> Unit
     ): ProbeResult {
+        if (verifiedCloudflareTarget(targetIp) == null) {
+            return ProbeResult(ok = false, error = "候选必须是 Cloudflare 官方网段内的 IP", targetIp = targetIp)
+        }
         val host = testHost.trim().lowercase(Locale.ROOT)
         if (host.isEmpty() || host.any { it.isWhitespace() }) {
             return ProbeResult(ok = false, error = "测试主机无效", targetIp = targetIp)
@@ -171,6 +199,156 @@ object ProbeEngine {
         return result ?: ProbeResult(ok = false, error = "no result", targetIp = targetIp)
     }
 
+    /**
+     * Fixes [argoHost] to [targetIp], validates its certificate, reads the
+     * Cloudflare trace endpoint and optionally sends a small WebSocket upgrade
+     * request to [wsPath]. No origin download endpoint is assumed.
+     */
+    suspend fun probeArgoRoute(
+        targetIp: String,
+        argoHost: String,
+        wsPath: String = "",
+        timeoutSec: Int = 8,
+        log: (String) -> Unit = {}
+    ): ArgoRouteResult {
+        val targetAddress = verifiedCloudflareTarget(targetIp)
+            ?: return ArgoRouteResult(
+                ok = false,
+                error = "候选必须是 Cloudflare 官方网段内的 IP",
+                targetIp = targetIp,
+                sni = argoHost,
+                hostHeader = argoHost,
+                wsPath = wsPath
+            )
+        val host = argoHost.trim().lowercase(Locale.ROOT)
+        val events = StringBuilder()
+        var traceTiming: ProbeTimingListener.Timings? = null
+        val traceClient = newColdClient(host, targetIp, timeoutSec, events, { traceTiming = it })
+        val traceCall = traceClient.newCall(
+            Request.Builder()
+                .url("https://$host/cdn-cgi/trace")
+                .header("Cache-Control", "no-store")
+                .get()
+                .build()
+        )
+        val activeCalls = mutableListOf(traceCall)
+        var result: ArgoRouteResult? = null
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+            cont.invokeOnCancellation {
+                activeCalls.forEach { it.cancel() }
+                log(">>> Argo 兼容验证已取消")
+            }
+            try {
+                var traceCode = 0
+                var traceHandshake = false
+                var traceText = ""
+                traceCall.execute().use { response ->
+                    traceCode = response.code
+                    traceHandshake = response.handshake != null
+                    traceText = readTextLimited(response, 64 * 1024)
+                }
+                val timing = traceTiming ?: ProbeTimingListener.Timings()
+                val remoteMatches = addressesEqual(targetAddress, timing.actualRemoteAddr)
+                var colo = ""
+                var loc = ""
+                traceText.lineSequence().forEach { line ->
+                    when {
+                        line.startsWith("colo=") -> colo = line.removePrefix("colo=").trim()
+                        line.startsWith("loc=") -> loc = line.removePrefix("loc=").trim()
+                    }
+                }
+
+                var wsCode = 0
+                var wsUpgrade = false
+                var wsAcceptMatches = false
+                var wsRemoteAddress: InetAddress? = null
+                if (wsPath.isNotEmpty() && traceHandshake && remoteMatches) {
+                    val keyBytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+                    val websocketKey = Base64.getEncoder().encodeToString(keyBytes)
+                    val expectedAccept = Base64.getEncoder().encodeToString(
+                        MessageDigest.getInstance("SHA-1")
+                            .digest((websocketKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(Charsets.US_ASCII))
+                    )
+                    val wsClient = newColdClient(host, targetIp, timeoutSec, events, {}, { wsRemoteAddress = it })
+                    val wsCall = wsClient.newCall(
+                        Request.Builder()
+                            .url("https://$host$wsPath")
+                            .header("Connection", "Upgrade")
+                            .header("Upgrade", "websocket")
+                            .header("Sec-WebSocket-Version", "13")
+                            .header("Sec-WebSocket-Key", websocketKey)
+                            .header("Cache-Control", "no-store")
+                            .get()
+                            .build()
+                    )
+                    activeCalls.add(wsCall)
+                    try {
+                        wsCall.execute().use { response ->
+                            wsCode = response.code
+                            wsUpgrade = response.header("Upgrade")?.equals("websocket", ignoreCase = true) == true &&
+                                response.header("Connection").orEmpty().split(',').any { it.trim().equals("upgrade", ignoreCase = true) }
+                            wsAcceptMatches = response.header("Sec-WebSocket-Accept") == expectedAccept
+                            // Do not consume an upgraded stream; closing the response
+                            // immediately keeps this a tiny compatibility check.
+                        }
+                    } catch (e: Exception) {
+                        events.append("ws path: ").append(e.javaClass.simpleName).append('\n')
+                    }
+                }
+                val wsRemoteMatches = wsPath.isEmpty() || addressesEqual(targetAddress, wsRemoteAddress)
+                val websocketAccepted = wsPath.isNotEmpty() && wsCode == 101 && wsUpgrade && wsAcceptMatches && wsRemoteMatches
+                val pathCompatible = wsPath.isEmpty() || websocketAccepted
+                val ok = traceHandshake && remoteMatches && traceCode in 200..499 && pathCompatible
+                result = ArgoRouteResult(
+                    ok = ok,
+                    error = when {
+                        !traceHandshake -> "TLS 证书验证失败"
+                        !remoteMatches -> "实际远端与候选 IP 不一致"
+                        traceCode !in 200..499 -> "Argo 域名入口返回 HTTP ${if (traceCode > 0) traceCode else "无响应"}"
+                        !wsRemoteMatches -> "WS 实际远端与候选 IP 不一致"
+                        !pathCompatible -> "WS 升级验证失败${if (wsCode > 0) "（HTTP $wsCode）" else ""}"
+                        else -> ""
+                    },
+                    targetIp = targetIp,
+                    sni = host,
+                    hostHeader = host,
+                    certVerified = traceHandshake,
+                    targetMatchesRemote = remoteMatches,
+                    actualRemoteAddress = timing.actualRemoteAddress,
+                    traceHttpCode = traceCode,
+                    wsPath = wsPath,
+                    wsHttpCode = wsCode,
+                    websocketAccepted = websocketAccepted,
+                    ttfbMs = timing.ttfbMs(),
+                    colo = colo,
+                    loc = loc
+                )
+                cont.resumeWith(Result.success(Unit))
+            } catch (e: java.io.IOException) {
+                result = ArgoRouteResult(
+                    ok = false,
+                    error = if (cont.isCancelled) "已取消" else "${e.javaClass.simpleName}: ${e.message?.take(100)}",
+                    targetIp = targetIp,
+                    sni = host,
+                    hostHeader = host,
+                    wsPath = wsPath
+                )
+                cont.resumeWith(Result.success(Unit))
+            } catch (e: Exception) {
+                result = ArgoRouteResult(
+                    ok = false,
+                    error = "${e.javaClass.simpleName}: ${e.message?.take(100)}",
+                    targetIp = targetIp,
+                    sni = host,
+                    hostHeader = host,
+                    wsPath = wsPath
+                )
+                cont.resumeWith(Result.success(Unit))
+            }
+        }
+        return result ?: ArgoRouteResult(ok = false, error = "no result", targetIp = targetIp, sni = host, hostHeader = host)
+    }
+
     /** POP 查询（cdn-cgi/trace）——suspend + 可取消。 */
     suspend fun probeTrace(
         targetIp: String,
@@ -178,6 +356,7 @@ object ProbeEngine {
         testHost: String = SPEED_HOST,
         log: (String) -> Unit
     ): Pair<String, String> {
+        if (verifiedCloudflareTarget(targetIp) == null) return Pair("", "")
         val events = StringBuilder()
         val host = testHost.trim().lowercase(Locale.ROOT)
         val call = newTraceCall(host, targetIp, timeoutSec, events)
@@ -209,6 +388,12 @@ object ProbeEngine {
         return client.newCall(req)
     }
 
+    private fun verifiedCloudflareTarget(value: String): InetAddress? {
+        if (!isIpLiteral(value)) return null
+        val address = try { InetAddress.getByName(value) } catch (_: Exception) { return null }
+        return address.takeIf { CfRanges.isCloudflare(it) }
+    }
+
     /** 执行 trace call 并解析 colo/loc。 */
     private fun executeTrace(call: okhttp3.Call, events: StringBuilder): Pair<String, String> {
         return try {
@@ -234,11 +419,13 @@ object ProbeEngine {
         targetIp: String,
         timeoutSec: Int,
         events: StringBuilder,
-        onTimings: (ProbeTimingListener.Timings) -> Unit
+        onTimings: (ProbeTimingListener.Timings) -> Unit,
+        onConnect: (InetAddress?) -> Unit = {}
     ): OkHttpClient {
         val listener = ProbeTimingListener(
             onEvent = { events.append(it).append("\n") },
-            onTimings = onTimings
+            onTimings = onTimings,
+            onConnect = onConnect
         )
         return OkHttpClient.Builder()
             .dns(FixedDns.forTestHost(testHost, targetIp))
@@ -275,6 +462,24 @@ object ProbeEngine {
         return count
     }
 
+    private fun readTextLimited(resp: Response, maxBytes: Int): String {
+        val body = resp.body ?: return ""
+        body.byteStream().use { input ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(4096)
+            var total = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                val accepted = minOf(count, maxBytes - total)
+                if (accepted > 0) output.write(buffer, 0, accepted)
+                total += accepted
+                if (total >= maxBytes) break
+            }
+            return output.toString(Charsets.UTF_8.name())
+        }
+    }
+
     private fun peerCn(resp: Response): String {
         return try {
             val cert = resp.handshake?.peerCertificates?.firstOrNull()
@@ -307,7 +512,7 @@ object ProbeEngine {
 
         // 80% 完整性规则
         val complete = bytesTarget <= 0L || bytesDownloaded >= (bytesTarget * 0.80).toLong()
-        // Remote 必须与当前 DNS 快照中的候选 IP 字节级一致。若网络、中间件或
+        // Remote 必须与本轮候选 IP 字节级一致。若网络、中间件或
         // 代理将连接改指向其他地址，吞吐不计入任何 IP 成绩。
         val ok = resp.code in 200..399 && resp.handshake != null && complete && targetMatches
 

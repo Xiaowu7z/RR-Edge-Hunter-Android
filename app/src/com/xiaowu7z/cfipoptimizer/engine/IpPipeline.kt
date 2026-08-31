@@ -86,7 +86,7 @@ object IpPipeline {
         preBytes = 0L,
         microBytes = 0L,
         fullBytes = 0L,
-        microLimit = 10,
+        microLimit = 20,
         finalLimit = 2,
         fullRounds = 2,
         preConcurrency = 32,
@@ -99,7 +99,7 @@ object IpPipeline {
         preBytes = 0L,
         microBytes = 0L,
         fullBytes = 0L,
-        microLimit = 10,
+        microLimit = 20,
         finalLimit = 3,
         fullRounds = 2,
         preConcurrency = 32,
@@ -229,7 +229,13 @@ object IpPipeline {
             candidates = preEligible,
             pre = preResults,
             shortlistLimit = params.microLimit,
-            diversifyAcrossLatency = !params.earlyStop
+            // A pure lowest-RTT cutoff can be monopolised by one Cloudflare
+            // range whose edge accepts TCP but cannot sustain the strict
+            // speed.cloudflare.com download on the current route.  Every
+            // strategy therefore keeps a low-latency majority plus candidates
+            // from the rest of the latency distribution.  Balanced/Asia still
+            // save time and traffic through their confirmed-target early exit.
+            diversifyAcrossLatency = true
         )
         val speedCandidates = if (!routeValidationRequired) {
             orderedForSpeed.take(params.microLimit)
@@ -367,11 +373,11 @@ object IpPipeline {
     /**
      * Full candidate ordering used by the expensive stage.
      *
-     * Normal modes keep pure RTT order for the fastest target-based exit.  The
-     * maximum-bandwidth mode keeps a 65% low-RTT majority but reserves the rest
-     * of its shortlist for evenly spaced latency quantiles.  This prevents a
-     * fast-throughput route with moderately higher RTT from being excluded
-     * before it receives any real download sample.
+     * Every mode keeps a 65% low-RTT majority but reserves the rest of its
+     * shortlist for evenly spaced latency quantiles.  This prevents one
+     * low-RTT-but-download-incompatible range from occupying the whole strict
+     * test stage, and also prevents a fast-throughput route with moderately
+     * higher RTT from being excluded before it receives a real sample.
      */
     fun orderForSpeedCandidates(
         candidates: List<Candidate>,

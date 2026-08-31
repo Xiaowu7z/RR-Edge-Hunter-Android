@@ -724,7 +724,7 @@ class MainActivity : Activity() {
         if (metric.primaryPop.isNotBlank()) addView(label("入口：${metric.primaryPop} · 亚洲评分 ${metric.edgeScore}${if (metric.popDrift) " · POP 漂移" else ""}", 11f, if (metric.edgeScore > 0) good else secondary, metric.edgeScore > 0))
         when {
             metric.pre?.ok == false -> addView(label("预检失败；未进入 Full，已按 0 计入。", 10.5f, warn))
-            metric.micro?.ok == false -> addView(label("1 秒下载测速失败；未进入复测。", 10.5f, warn))
+            metric.micro?.ok == false -> addView(label("1 秒下载失败：${compactError(metric.micro?.error.orEmpty())}；已继续尝试其他候选。", 10.5f, warn))
             metric.full.isEmpty() -> addView(label("未进入 1 秒真实下载测速。", 10.5f, warn))
             metric.full.any { !it.ok } -> addView(label("复测含失败样本，不作为可用节点推荐。", 10.5f, warn))
         }
@@ -733,6 +733,11 @@ class MainActivity : Activity() {
             if (allowDns) addView(secondaryButton("解析到我的域名（DNS-only）") { showDnsSyncDialog(metric.ip) }, lp(8))
         } else addView(label("此项不可作为节点地址复制。", 10.5f, warn).apply { setPadding(0, dp(8), 0, 0) })
     }
+    private fun compactError(value: String): String = value
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(100)
+        .ifBlank { "未知原因" }
     private fun fmt(value: Double) = "%.1f".format(value)
     private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
         try {

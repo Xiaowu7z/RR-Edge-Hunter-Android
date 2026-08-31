@@ -193,14 +193,16 @@ object ProbeEngine {
     }
 
     /**
-     * 约 1 秒真实下载测速所需的最大请求体。普通模式按目标带宽准备，
-     * 最大带宽模式保留更大的上限；读取端仍会在时间窗到达后主动关闭。
+     * 约 1 秒真实下载测速所需的最大响应容量。所有策略至少请求 64 MB，
+     * 避免高速线路在 800 ms 前读完较小响应而让不同模式得到不同结论；
+     * 读取端仍会在一秒时间窗到达后主动关闭，并不会固定下载完整 64 MB。
+     * [maximum] 保留用于兼容 1.0.0 内部调用。
      */
+    @Suppress("UNUSED_PARAMETER")
     fun speedRequestBytes(expectedMbps: Int, maximum: Boolean = false): Long {
         val boundedMbps = expectedMbps.coerceIn(1, 2_000).toLong()
-        val floor = if (maximum) 64_000_000L else 4_000_000L
         val requested = boundedMbps * 125_000L * 3L / 2L
-        return maxOf(floor, requested).coerceAtMost(256_000_000L)
+        return maxOf(64_000_000L, requested).coerceAtMost(256_000_000L)
     }
 
     data class SpeedRates(

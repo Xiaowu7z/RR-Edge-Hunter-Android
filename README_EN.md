@@ -36,7 +36,7 @@ Leave the other options at their defaults. The repository retains only the lates
 | Candidate source | Official Cloudflare default pool, optionally plus any user-imported safe public IPs |
 | Output | Replace node `address/server` only |
 
-All strategies run three TCP-connect RTT checks for up to 100 candidates per family, rejecting a candidate if any round fails. Balanced and Asia Hunt pass the ten lowest-RTT candidates to strict downloads and stop only after one IP reaches the target twice. Maximum Bandwidth tests a diverse 20-address shortlist and confirms the fastest three. Every copyable result needs two successful strict download samples.
+All strategies run three TCP-connect RTT checks for up to 100 candidates per family, rejecting a candidate if any round fails. They then pass a diverse 20-address shortlist—a low-RTT majority plus cross-latency quantiles—to strict downloads, preventing one low-latency range from monopolising the test. Balanced and Asia Hunt stop only after one IP reaches the target twice. Maximum Bandwidth tests the full shortlist and confirms the fastest three. Every copyable result needs two successful strict download samples.
 
 ### Strategies
 
@@ -50,7 +50,7 @@ All strategies run three TCP-connect RTT checks for up to 100 candidates per fam
 2. Optionally add safe public IP literals as restricted candidates; private, loopback, link-local, and reserved addresses never enter probing.
 3. Pin `speed.cloudflare.com:443` to each candidate while retaining platform certificate, SNI, Host, and actual TCP-peer validation.
 4. Run three direct TCP-connect RTT checks for up to 100 candidates per family; any failed round rejects that candidate. Concurrency is capped at 32 on Wi-Fi and 16 on mobile networks.
-5. Balanced/Asia modes retain the ten lowest-RTT candidates. Maximum Bandwidth uses a 20-address shortlist with a low-RTT majority plus cross-latency quantiles.
+5. Every mode uses a 20-address shortlist with a low-RTT majority plus cross-latency quantiles.
 6. Only the shortlist enters strict TLS/SNI/peer/CF-RAY download validation. Redirects, undersized bodies and samples shorter than the guarded window are rejected.
 7. Confirmation failures are backfilled from the next first-round result until the required number of twice-successful candidates is reached or the shortlist is exhausted.
 8. Only candidates with at least two successful samples can be copied to a node or synchronized to DNS. Maximum Bandwidth selects by confirmed average real-download speed; the other modes prioritize reliable floor and stability.

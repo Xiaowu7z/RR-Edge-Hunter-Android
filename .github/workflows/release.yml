@@ -108,11 +108,9 @@ jobs:
           grep -Fq "package: name='com.xiaowu7z.cfipoptimizer' versionCode='$VERSION_CODE' versionName='$VERSION'" <<<"$BADGING"
           VERIFY="$("$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK")"
           printf '%s\n' "$VERIFY"
-          grep -Fq "Verified using v1 scheme (JAR signing): true" <<<"$VERIFY"
-          grep -Fq "Verified using v2 scheme (APK Signature Scheme v2): true" <<<"$VERIFY"
           grep -Fq "Verified using v3 scheme (APK Signature Scheme v3): true" <<<"$VERIFY"
           test -n "$EXPECTED_CERT_SHA256"
-          CERT_DIGEST="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<<"$VERIFY" | head -n 1 | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          CERT_DIGEST="$(sed -nE 's/^(Signer #1|V3\.0 Signer:) certificate SHA-256 digest: //p' <<<"$VERIFY" | head -n 1 | tr '[:upper:]' '[:lower:]' | tr -d ':')"
           EXPECTED_CERT_DIGEST="$(tr '[:upper:]' '[:lower:]' <<<"$EXPECTED_CERT_SHA256" | tr -d ':[:space:]')"
           [[ "$EXPECTED_CERT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           test "$CERT_DIGEST" = "$EXPECTED_CERT_DIGEST"

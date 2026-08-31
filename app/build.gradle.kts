@@ -37,8 +37,11 @@ android {
             storePassword = requiredReleaseEnv("CFIP_RELEASE_STORE_PASSWORD")
             keyAlias = requiredReleaseEnv("CFIP_RELEASE_KEY_ALIAS")
             keyPassword = requiredReleaseEnv("CFIP_RELEASE_KEY_PASSWORD")
-            enableV1Signing = true
-            enableV2Signing = true
+            // minSdk 29 (Android 10) supports APK Signature Scheme v3.  A
+            // single v3 identity keeps every supported installation on the
+            // same new formal certificate.
+            enableV1Signing = false
+            enableV2Signing = false
             enableV3Signing = true
             enableV4Signing = false
         }

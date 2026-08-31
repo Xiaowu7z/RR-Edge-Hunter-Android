@@ -57,8 +57,8 @@ apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-relea
 
 1. 包名为 `com.xiaowu7z.cfipoptimizer`。
 2. `versionName` 与待发布标签 `v<versionName>` 一致，且 `versionCode` 大于此前正式版本。
-3. v1、v2、v3 签名均为 `true`。
-4. 输出的 `Signer #1 certificate SHA-256 digest` 与新证书的固定 SHA-256 指纹完全一致。
+3. v3 签名为 `true`。应用 `minSdk` 为 Android 10（29），正式 APK 只使用 v3 方案；v1/v2 不属于支持范围。
+4. 输出的签名证书 SHA-256 digest（v3 构建中显示为 `V3.0 Signer`）与新证书的固定 SHA-256 指纹完全一致。
 
 ## GitHub Actions 配置
 
@@ -82,6 +82,6 @@ apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-relea
 2. `applicationId` 必须为 `com.xiaowu7z.cfipoptimizer`。
 3. `versionCode` 必须为正整数，且高于所有历史稳定标签中的版本号。
 4. `CFIP_ANDROID_CERT_SHA256` 必须是已配置的新证书的 64 位 SHA-256 指纹，不能是空值或占位值。
-5. APK 必须通过 v1、v2、v3 签名校验，并与该指纹匹配。
+5. APK 必须通过 v3 签名校验，并与该指纹匹配。
 6. 每个稳定版 Release 只发布一个固定名称的 universal APK：`CF-IP-Optimizer.apk`，并附同名 SHA-256 文件。这让用户始终可通过 `releases/latest/download/CF-IP-Optimizer.apk` 一键下载最新版。
 7. 已存在的标签或 Release 不得覆盖、替换或补传资产。

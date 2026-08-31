@@ -16,6 +16,13 @@ fun main() {
     val v6Samples = CfRanges.sampleOfficial("IPv6", perRange = 2, limit = 14)
     check("IPv6 官方抽样受上限约束", v6Samples.size in 1..14, "size=${v6Samples.size}")
     check("IPv6 官方抽样全部属于 CF", v6Samples.all { CfRanges.isCloudflare(InetAddress.getByName(it)) })
+    val rotatedA = CfRanges.sampleOfficial("IPv4", perRange = 3, limit = 30, seed = 11L)
+    val rotatedB = CfRanges.sampleOfficial("IPv4", perRange = 3, limit = 30, seed = 12L)
+    check("官方样本可按每轮seed有界轮转", rotatedA != rotatedB && rotatedA.size <= 30 && rotatedB.size <= 30)
+    check(
+        "轮转样本仍全部受CF官方网段约束",
+        (rotatedA + rotatedB).all { CfRanges.isCloudflare(InetAddress.getByName(it)) }
+    )
 
     val direct = CandidatePool.build(
         AuthorizedHostSnapshot(host = "speed.cloudflare.com", ipv4 = emptyList(), ipv6 = emptyList()),
@@ -36,7 +43,7 @@ fun main() {
     )
     val importedOnly = CandidatePool.build(
         snapshot,
-        imported = listOf("104.16.99.88", "1.1.1.1", "2606:4700::99"),
+        imported = listOf("104.16.99.88", "1.1.1.1", "192.168.1.8", "2606:4700::99"),
         family = "IPv4",
         includeOfficialSamples = false
     )
@@ -45,7 +52,12 @@ fun main() {
         importedOnly.candidates.any { it.ip == "104.16.99.88" && it.source == "用户IP池" },
         importedOnly.toString()
     )
-    check("非 CF 导入地址被拒绝", importedOnly.ignoredOutsideCloudflare == 1, importedOnly.toString())
+    check(
+        "用户主动导入的任意公网IP可进入受限候选",
+        importedOnly.candidates.any { it.ip == "1.1.1.1" && it.source == "用户IP池" },
+        importedOnly.toString()
+    )
+    check("私网导入地址被拒绝", importedOnly.ignoredUnsafeOrNonPublic == 1, importedOnly.toString())
     check("其他协议族单独统计", importedOnly.ignoredWrongFamily == 1, importedOnly.toString())
     check("当前 DNS 始终作为首个种子", importedOnly.candidates.firstOrNull()?.source == "当前DNS", importedOnly.toString())
 

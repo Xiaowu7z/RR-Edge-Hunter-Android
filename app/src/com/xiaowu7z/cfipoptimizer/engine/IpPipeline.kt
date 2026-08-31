@@ -1,5 +1,6 @@
 package com.xiaowu7z.cfipoptimizer.engine
 
+import com.xiaowu7z.cfipoptimizer.IpSources
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -61,7 +62,7 @@ data class IpMetric(
  */
 object IpPipeline {
     private const val ROUTE_TIMEOUT_SECONDS = 8
-    private const val PRE_TIMEOUT_SECONDS = 5
+    private const val PRE_TIMEOUT_SECONDS = 1
     private const val SPEED_TIMEOUT_SECONDS = 5
 
     /**
@@ -82,7 +83,7 @@ object IpPipeline {
     )
 
     val BALANCED = ModeParams(
-        preBytes = 16_000L,
+        preBytes = 0L,
         microBytes = 0L,
         fullBytes = 0L,
         microLimit = 10,
@@ -95,7 +96,7 @@ object IpPipeline {
     )
 
     val ASIA_HUNT = ModeParams(
-        preBytes = 16_000L,
+        preBytes = 0L,
         microBytes = 0L,
         fullBytes = 0L,
         microLimit = 10,
@@ -108,10 +109,10 @@ object IpPipeline {
     )
 
     val MAX_BANDWIDTH = ModeParams(
-        preBytes = 16_000L,
+        preBytes = 0L,
         microBytes = 0L,
         fullBytes = 0L,
-        microLimit = 10,
+        microLimit = 20,
         finalLimit = 3,
         fullRounds = 2,
         preConcurrency = 32,
@@ -153,10 +154,14 @@ object IpPipeline {
     ): Double {
         if (candidateCount <= 0) return 0.0
         val shortlist = minOf(candidateCount, params.microLimit)
-        val confirmations = minOf(shortlist, params.finalLimit)
         val requestBytes = ProbeEngine.speedRequestBytes(expectedMbps, maximum = !params.earlyStop)
+        // Every first-round success can require a second request before enough
+        // confirmed winners have been found.  Counting only finalLimit
+        // under-reports the worst case when fast-looking candidates fail their
+        // confirmation one after another.
+        val worstCaseSpeedSamples = shortlist * maxOf(2, params.fullRounds)
         val bytes = candidateCount * params.preBytes +
-            (shortlist + confirmations) * requestBytes
+            worstCaseSpeedSamples * requestBytes
         return bytes / 1_000_000.0
     }
 
@@ -177,7 +182,7 @@ object IpPipeline {
         val deduped = candidates
             .filter { ProbeEngine.familyOf(it.ip) == family }
             .filter { candidate ->
-                try { CfRanges.isCloudflare(InetAddress.getByName(candidate.ip)) } catch (_: Exception) { false }
+                try { IpSources.isPublicAddress(InetAddress.getByName(candidate.ip)) } catch (_: Exception) { false }
             }
             .distinctBy { it.ip }
             .take(familyLimit)
@@ -188,66 +193,91 @@ object IpPipeline {
         }
 
         val routeValidationRequired = argoHost.isNotBlank()
-        val routeResults: Map<Candidate, ProbeEngine.ArgoRouteResult> = if (routeValidationRequired) {
-            onStage(Stage("高级节点兼容复核", 0, deduped.size))
-            val routeDone = AtomicInteger(0)
-            parallel(deduped, minOf(params.preConcurrency, 16)) { candidate ->
-                coroutineContext.ensureActive()
-                if (checkNetwork()) {
-                    candidate to ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidate.ip, error = "网络变化")
-                } else {
-                    val result = ProbeEngine.probeArgoRoute(
-                        targetIp = candidate.ip,
-                        argoHost = argoHost,
-                        wsPath = wsPath,
-                        targetPort = argoPort,
-                        timeoutSec = ROUTE_TIMEOUT_SECONDS,
-                        log = log
-                    )
-                    onStage(Stage("高级节点兼容复核", routeDone.incrementAndGet(), deduped.size))
-                    candidate to result
-                }
-            }.toMap()
-        } else emptyMap()
-        if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
+        val routeResults = LinkedHashMap<Candidate, ProbeEngine.ArgoRouteResult>()
 
-        val routeEligible = if (routeValidationRequired) {
-            deduped.filter { routeResults[it]?.ok == true }
-        } else deduped
-        if (routeEligible.isEmpty()) {
-            val failures = deduped.map { metric(it, routeResults[it], true, null, null, emptyList()) }
-            return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
-        }
-
-        onStage(Stage("并发延迟预筛", 0, routeEligible.size))
+        // The cheap funnel is deliberately TCP-only. The default pool is
+        // bounded to official Cloudflare CIDRs; user imports may be any safe
+        // public literal. Strict TLS, SNI, peer and CF-RAY validation remains
+        // mandatory for every result that can be copied to a node.
+        onStage(Stage("并发 TCP 三次快筛", 0, deduped.size))
         val preDone = AtomicInteger(0)
-        val preResults = parallel(routeEligible, params.preConcurrency) { candidate ->
+        val preResults = parallel(deduped, params.preConcurrency) { candidate ->
             coroutineContext.ensureActive()
             if (checkNetwork()) {
                 candidate to failed(candidate.ip, "网络变化")
             } else {
-                val result = ProbeEngine.probeDownload(
+                val result = ProbeEngine.probeTcpRtt(
                     targetIp = candidate.ip,
-                    bytes = params.preBytes,
-                    timeoutSec = PRE_TIMEOUT_SECONDS,
-                    testHost = ProbeEngine.SPEED_HOST,
+                    attempts = 3,
+                    timeoutMillis = PRE_TIMEOUT_SECONDS * 1_000,
                     targetPort = 443,
-                    includeTrace = false,
                     log = log
                 )
-                onStage(Stage("并发延迟预筛", preDone.incrementAndGet(), routeEligible.size))
+                onStage(Stage("并发 TCP 三次快筛", preDone.incrementAndGet(), deduped.size))
                 candidate to result
             }
         }.toMap()
         if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
-        val preEligible = routeEligible.filter { preResults[it]?.ok == true }
+        val preEligible = deduped.filter { preResults[it]?.ok == true }
         if (preEligible.isEmpty()) {
             val failures = deduped.map { metric(it, routeResults[it], routeValidationRequired, preResults[it], null, emptyList()) }
             return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
         }
 
-        val speedCandidates = chooseForSpeed(preEligible, preResults, params.microLimit)
+        val orderedForSpeed = orderForSpeedCandidates(
+            candidates = preEligible,
+            pre = preResults,
+            shortlistLimit = params.microLimit,
+            diversifyAcrossLatency = !params.earlyStop
+        )
+        val speedCandidates = if (!routeValidationRequired) {
+            orderedForSpeed.take(params.microLimit)
+        } else {
+            // Validate only the shortlist.  A failed SNI/Host/WS candidate is
+            // replaced by the next pre-screened candidate instead of shrinking
+            // the useful speed-test set.
+            val passed = ArrayList<Candidate>(params.microLimit)
+            var cursor = 0
+            var attempted = 0
+            onStage(Stage("高级节点兼容复核与补位", 0, orderedForSpeed.size))
+            while (passed.size < params.microLimit && cursor < orderedForSpeed.size) {
+                coroutineContext.ensureActive()
+                val needed = params.microLimit - passed.size
+                val batchSize = minOf(needed, minOf(params.preConcurrency, 16), orderedForSpeed.size - cursor)
+                val batch = orderedForSpeed.subList(cursor, cursor + batchSize)
+                cursor += batchSize
+                val checked = parallel(batch, minOf(batchSize, 16)) { candidate ->
+                    coroutineContext.ensureActive()
+                    val route = if (checkNetwork()) {
+                        ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidate.ip, error = "网络变化")
+                    } else {
+                        ProbeEngine.probeArgoRoute(
+                            targetIp = candidate.ip,
+                            argoHost = argoHost,
+                            wsPath = wsPath,
+                            targetPort = argoPort,
+                            timeoutSec = ROUTE_TIMEOUT_SECONDS,
+                            log = log
+                        )
+                    }
+                    candidate to route
+                }
+                checked.forEach { (candidate, route) ->
+                    routeResults[candidate] = route
+                    attempted++
+                    onStage(Stage("高级节点兼容复核与补位", attempted, orderedForSpeed.size))
+                }
+                passed.clear()
+                passed.addAll(routeValidatedCandidates(orderedForSpeed.take(cursor), routeResults, params.microLimit))
+                if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
+            }
+            passed.take(params.microLimit)
+        }
+        if (speedCandidates.isEmpty()) {
+            val failures = deduped.map { metric(it, routeResults[it], routeValidationRequired, preResults[it], null, emptyList()) }
+            return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
+        }
         val requestBytes = ProbeEngine.speedRequestBytes(expectedMbps, maximum = !params.earlyStop)
         val samples = LinkedHashMap<Candidate, MutableList<ProbeEngine.ProbeResult>>()
 
@@ -266,6 +296,7 @@ object IpPipeline {
         }
 
         var earlyWinner: Candidate? = null
+        var earlyRetests = 0
         onStage(Stage("1 秒真实下载测速", 0, speedCandidates.size))
         for ((index, candidate) in speedCandidates.withIndex()) {
             val first = sample(candidate)
@@ -274,11 +305,12 @@ object IpPipeline {
             if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
             if (params.earlyStop && first.ok && first.completeTransferMbps >= expectedMbps) {
-                onStage(Stage("达标候选复测", 0, 1))
+                onStage(Stage("达标候选复测", earlyRetests, speedCandidates.size))
                 val second = sample(candidate)
                 samples.getValue(candidate).add(second)
-                onStage(Stage("达标候选复测", 1, 1))
-                if (second.ok && second.completeTransferMbps >= expectedMbps) {
+                earlyRetests++
+                onStage(Stage("达标候选复测", earlyRetests, speedCandidates.size))
+                if (hasConfirmedTarget(samples.getValue(candidate), expectedMbps, params.fullRounds)) {
                     earlyWinner = candidate
                     log("${candidate.ip} 连续两次达到 $expectedMbps Mbps，提前结束")
                     break
@@ -291,20 +323,26 @@ object IpPipeline {
             val confirmationCandidates = speedCandidates
                 .filter { candidate ->
                     val current = samples[candidate].orEmpty()
-                    current.firstOrNull()?.ok == true && !(current.size >= 2 && current.any { !it.ok })
+                    current.firstOrNull()?.ok == true
                 }
                 .sortedWith(
                     compareByDescending<Candidate> { samples[it]?.firstOrNull()?.completeTransferMbps ?: 0.0 }
                         .thenBy { it.ip }
                 )
-                .take(params.finalLimit)
-            onStage(Stage("最快候选复测", 0, confirmationCandidates.size))
-            confirmationCandidates.forEachIndexed { index, candidate ->
-                if (samples[candidate].orEmpty().size < params.fullRounds) {
-                    samples.getOrPut(candidate) { mutableListOf() }.add(sample(candidate))
-                }
-                onStage(Stage("最快候选复测", index + 1, confirmationCandidates.size))
-            }
+            val worstCaseRequests = confirmationRequestUpperBound(
+                confirmationCandidates,
+                samples,
+                params.fullRounds
+            )
+            onStage(Stage("最快候选复测与补位", 0, worstCaseRequests))
+            confirmFastestCandidates(
+                orderedCandidates = confirmationCandidates,
+                samples = samples,
+                finalLimit = params.finalLimit,
+                fullRounds = params.fullRounds,
+                onAttempt = { current, total -> onStage(Stage("最快候选复测与补位", current, total)) },
+                sample = { sample(it) }
+            )
         }
         if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
@@ -326,17 +364,113 @@ object IpPipeline {
         FamilyResult(ranked, if (asiaHunt) rankAsia(metrics) else ranked, pops)
     }
 
-    private fun chooseForSpeed(
+    /**
+     * Full candidate ordering used by the expensive stage.
+     *
+     * Normal modes keep pure RTT order for the fastest target-based exit.  The
+     * maximum-bandwidth mode keeps a 65% low-RTT majority but reserves the rest
+     * of its shortlist for evenly spaced latency quantiles.  This prevents a
+     * fast-throughput route with moderately higher RTT from being excluded
+     * before it receives any real download sample.
+     */
+    fun orderForSpeedCandidates(
         candidates: List<Candidate>,
         pre: Map<Candidate, ProbeEngine.ProbeResult>,
-        limit: Int
-    ): List<Candidate> = candidates.sortedWith(
-        compareBy<Candidate> {
+        shortlistLimit: Int,
+        diversifyAcrossLatency: Boolean
+    ): List<Candidate> {
+        val latencySorted = candidates.sortedWith(compareBy<Candidate> {
             pre[it]?.ttfbMs?.takeIf { value -> value >= 0.0 } ?: Double.MAX_VALUE
         }.thenBy {
             pre[it]?.tcpMs?.takeIf { value -> value >= 0.0 } ?: Double.MAX_VALUE
-        }.thenBy { it.ip }
-    ).take(limit)
+        }.thenBy { it.ip })
+        if (!diversifyAcrossLatency || shortlistLimit <= 2 || latencySorted.size <= shortlistLimit) {
+            return latencySorted
+        }
+
+        val boundedLimit = shortlistLimit.coerceAtMost(latencySorted.size)
+        val lowLatencyCount = maxOf(1, (boundedLimit * 65 + 99) / 100)
+        val selected = LinkedHashSet<Candidate>()
+        selected.addAll(latencySorted.take(lowLatencyCount))
+        val diversitySlots = boundedLimit - selected.size
+        repeat(diversitySlots) { index ->
+            val tailLast = latencySorted.lastIndex
+            val position = if (diversitySlots == 1) tailLast else {
+                lowLatencyCount +
+                    (index.toLong() * (tailLast - lowLatencyCount) / (diversitySlots - 1L)).toInt()
+            }
+            selected.add(latencySorted[position])
+        }
+        latencySorted.forEach { if (selected.size < boundedLimit) selected.add(it) }
+        return selected.toList() + latencySorted.filterNot { it in selected }
+    }
+
+    fun routeValidatedCandidates(
+        orderedCandidates: List<Candidate>,
+        routeResults: Map<Candidate, ProbeEngine.ArgoRouteResult>,
+        limit: Int
+    ): List<Candidate> = orderedCandidates.asSequence()
+        .filter { routeResults[it]?.ok == true }
+        .take(limit.coerceAtLeast(0))
+        .toList()
+
+    /** Only two (or [fullRounds]) successful real downloads make a candidate confirmed. */
+    fun hasConfirmedTarget(
+        samples: List<ProbeEngine.ProbeResult>,
+        expectedMbps: Int,
+        fullRounds: Int = 2
+    ): Boolean = samples.size >= fullRounds &&
+        samples.take(fullRounds).all { it.ok && it.completeTransferMbps >= expectedMbps }
+
+    data class ConfirmationOutcome(
+        val confirmed: List<Candidate>,
+        val requestsMade: Int,
+        val requestUpperBound: Int
+    )
+
+    fun confirmationRequestUpperBound(
+        orderedCandidates: List<Candidate>,
+        samples: Map<Candidate, List<ProbeEngine.ProbeResult>>,
+        fullRounds: Int
+    ): Int = orderedCandidates.sumOf { candidate ->
+        val current = samples[candidate].orEmpty()
+        if (current.firstOrNull()?.ok != true || current.any { !it.ok }) 0
+        else (fullRounds - current.size).coerceAtLeast(0)
+    }
+
+    /**
+     * Confirms candidates in first-sample speed order. A failed confirmation
+     * never consumes one of [finalLimit]; the next candidate is tried until the
+     * requested number of fully successful results is available or the list is
+     * exhausted.
+     */
+    suspend fun confirmFastestCandidates(
+        orderedCandidates: List<Candidate>,
+        samples: MutableMap<Candidate, MutableList<ProbeEngine.ProbeResult>>,
+        finalLimit: Int,
+        fullRounds: Int = 2,
+        onAttempt: (current: Int, total: Int) -> Unit = { _, _ -> },
+        sample: suspend (Candidate) -> ProbeEngine.ProbeResult
+    ): ConfirmationOutcome {
+        val upperBound = confirmationRequestUpperBound(orderedCandidates, samples, fullRounds)
+        val confirmed = ArrayList<Candidate>(finalLimit.coerceAtLeast(0))
+        var attempts = 0
+        for (candidate in orderedCandidates) {
+            coroutineContext.ensureActive()
+            if (confirmed.size >= finalLimit) break
+            val current = samples.getOrPut(candidate) { mutableListOf() }
+            if (current.firstOrNull()?.ok != true || current.any { !it.ok }) continue
+            while (current.size < fullRounds && current.all { it.ok }) {
+                current.add(sample(candidate))
+                attempts++
+                onAttempt(attempts, upperBound)
+            }
+            if (current.size >= fullRounds && current.take(fullRounds).all { it.ok }) {
+                confirmed.add(candidate)
+            }
+        }
+        return ConfirmationOutcome(confirmed, attempts, upperBound)
+    }
 
     private fun failed(ip: String, message: String) = ProbeEngine.ProbeResult(ok = false, targetIp = ip, error = message)
 

@@ -59,10 +59,11 @@ fun main() {
 
     check("均衡模式达标复测后允许提前结束", IpPipeline.BALANCED.earlyStop)
     check("亚洲狩猎达标复测后允许提前结束", IpPipeline.ASIA_HUNT.earlyStop)
-    check("最大带宽模式必须测完整个前十", !IpPipeline.MAX_BANDWIDTH.earlyStop)
+    check("最大带宽模式必须测完整个多样候选集", !IpPipeline.MAX_BANDWIDTH.earlyStop)
     check(
-        "三个模式都只让延迟前十进入真实下载",
-        listOf(IpPipeline.BALANCED, IpPipeline.ASIA_HUNT, IpPipeline.MAX_BANDWIDTH).all { it.microLimit == 10 }
+        "普通模式前十、最大带宽模式扩大到二十",
+        IpPipeline.BALANCED.microLimit == 10 && IpPipeline.ASIA_HUNT.microLimit == 10 &&
+            IpPipeline.MAX_BANDWIDTH.microLimit == 20
     )
     val normalBytes = ProbeEngine.speedRequestBytes(100, maximum = false)
     val maximumBytes = ProbeEngine.speedRequestBytes(100, maximum = true)
@@ -74,6 +75,11 @@ fun main() {
         IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) >
             IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.BALANCED, 100)
     )
+    check(
+        "流量上限覆盖所有入围候选都需要二测的最坏情况",
+        IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) ==
+            ProbeEngine.speedRequestBytes(100, maximum = true) * 40 / 1_000_000.0
+    )
 
     val highAverage = metric("104.16.0.20", "LAX", floor = 45.0, avg = 110.0)
         .copy(maxCompleteMbps = 125.0)
@@ -82,6 +88,19 @@ fun main() {
     check(
         "最大带宽按复测平均下载速度选最快IP",
         IpPipeline.rankMaximum(listOf(highFloor, highAverage)).firstOrNull()?.ip == highAverage.ip
+    )
+    val oneShotSpike = highAverage.copy(
+        ip = "1.1.1.1",
+        avgCompleteMbps = 2_000.0,
+        maxCompleteMbps = 2_000.0,
+        minCompleteMbps = 2_000.0,
+        floorMbps = 2_000.0,
+        fullSuccessRatePct = 100.0,
+        full = listOf(ProbeEngine.ProbeResult(ok = true, targetIp = "1.1.1.1"))
+    )
+    check(
+        "最大带宽不允许单次偶发峰值成为冠军",
+        IpPipeline.rankMaximum(listOf(oneShotSpike, highFloor)).firstOrNull()?.ip == highFloor.ip
     )
     check(
         "均衡仍优先可靠下限",

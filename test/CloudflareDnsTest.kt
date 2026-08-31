@@ -249,9 +249,13 @@ fun main() {
     fails("冠军 IP 必须是公网字面量") {
         CloudflareDns.inspect(config, "192.168.1.1", FakeDnsTransport())
     }
-    fails("拒绝非 Cloudflare 官方公网 IP", "Cloudflare 官方网段") {
-        CloudflareDns.inspect(config, "1.1.1.1", FakeDnsTransport())
-    }
+    val externalChampion = CloudflareDns.inspect(config, "1.1.1.1", FakeDnsTransport())
+    check(
+        "严格复测确认后的外部公网冠军可生成 DNS 预览",
+        externalChampion.action == CloudflareDns.Action.CREATE &&
+            externalChampion.content == "1.1.1.1" &&
+            externalChampion.type == CloudflareDns.RecordType.A
+    )
 
     println("CloudflareDnsTest：PASS $passed / FAIL $failed")
     if (failed > 0) kotlin.system.exitProcess(1)

@@ -20,9 +20,12 @@ kotlin {
                 "com/xiaowu7z/cfipoptimizer/engine/ProbeEngine.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/IpPipeline.kt",
                 "IpSourcesTest.kt",
+                "CfRangesCancellationTest.kt",
                 "AuthorizedHostTest.kt",
                 "CandidatePoolTest.kt",
                 "IpPipelineRankTest.kt",
+                "FastFunnelTest.kt",
+                "SpeedWindowPolicyTest.kt",
                 "FixedDnsTest.kt",
                 "CloudflareDnsTest.kt"
             )
@@ -53,6 +56,14 @@ val authorizedHostTest by tasks.registering(JavaExec::class) {
     mainClass.set("AuthorizedHostTestKt")
 }
 
+val cfRangesCancellationTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies Cloudflare range refresh cancels its active OkHttp call."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("CfRangesCancellationTestKt")
+}
+
 val fixedDnsTest by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Verifies the test-host DNS override cannot resolve unrelated hosts."
@@ -77,6 +88,22 @@ val ipPipelineRankTest by tasks.registering(JavaExec::class) {
     mainClass.set("IpPipelineRankTestKt")
 }
 
+val fastFunnelTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies diverse shortlist selection, confirmation backfill, and cancellation."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("FastFunnelTestKt")
+}
+
+val speedWindowPolicyTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Rejects redirects and short error bodies and verifies independent speed clocks."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("SpeedWindowPolicyTestKt")
+}
+
 val cloudflareDnsTest by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Verifies safe two-phase Cloudflare A/AAAA synchronization."
@@ -88,9 +115,12 @@ val cloudflareDnsTest by tasks.registering(JavaExec::class) {
 tasks.named("check") {
     dependsOn(
         ipSourcesTest,
+        cfRangesCancellationTest,
         authorizedHostTest,
         candidatePoolTest,
         ipPipelineRankTest,
+        fastFunnelTest,
+        speedWindowPolicyTest,
         fixedDnsTest,
         cloudflareDnsTest
     )

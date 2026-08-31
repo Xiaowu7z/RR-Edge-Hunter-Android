@@ -1,6 +1,5 @@
 package com.xiaowu7z.cfipoptimizer
 
-import com.xiaowu7z.cfipoptimizer.engine.CfRanges
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -151,8 +150,8 @@ object CloudflareDns {
     ): SyncPlan {
         val config = normalizeConfig(configInput)
         val ip = IpSources.normalizeIp(championIp)
-        require(CfRanges.isCloudflare(IpSources.parseLiteralAddress(ip)!!)) {
-            "只允许同步 Cloudflare 官方网段内的优选 IP"
+        require(IpSources.isPublicAddress(IpSources.parseLiteralAddress(ip)!!)) {
+            "只允许同步本轮严格复测确认的安全公网 IP"
         }
         val type = if (ip.contains(':')) RecordType.AAAA else RecordType.A
         return inspectNormalized(config, type, ip, transport)
@@ -169,8 +168,8 @@ object CloudflareDns {
             "DNS 配置与已确认预览不一致，请重新预览"
         }
         val canonicalIp = IpSources.normalizeIp(confirmedPlan.content)
-        require(CfRanges.isCloudflare(IpSources.parseLiteralAddress(canonicalIp)!!)) {
-            "只允许同步 Cloudflare 官方网段内的优选 IP"
+        require(IpSources.isPublicAddress(IpSources.parseLiteralAddress(canonicalIp)!!)) {
+            "只允许同步本轮严格复测确认的安全公网 IP"
         }
         val expectedType = if (canonicalIp.contains(':')) RecordType.AAAA else RecordType.A
         require(expectedType == confirmedPlan.type) { "已确认预览中的记录类型无效" }

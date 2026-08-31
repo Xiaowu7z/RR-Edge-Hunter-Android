@@ -24,9 +24,9 @@ The testing APK and stable release intentionally remain at version **1.0.0**, so
 
 ### Automatic updates (optional)
 
-[🔄 **Already use Obtainium? Enable automatic updates**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
+[🔄 **Already use Obtainium? Enable automatic updates**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
 
-Confirm **CF 优选IP** after the link opens. No regular expressions, CPU architecture, prerelease, or ordering options are needed.
+The link already contains the repository, app name, author, and package ID. Review **CF 优选IP** and confirm the import; no regular expressions, CPU architecture, prerelease, or ordering options are needed. Obtainium will then track stable releases.
 
 <details>
 <summary>Troubleshooting: install and verification</summary>

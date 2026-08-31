@@ -24,9 +24,9 @@
 
 ### 自动更新（可选）
 
-[🔄 **已安装 Obtainium？点击开启自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
+[🔄 **已安装 Obtainium？点击开启自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
 
-点击后确认添加 **CF 优选IP** 即可；不需要填写正则、CPU 架构、预发布、排序等选项。以后由 Obtainium 检查并下载新版本。
+链接已预设仓库、应用名、作者和包名。点击后核对 **CF 优选IP** 并确认导入即可；不需要填写正则、CPU 架构、预发布、排序等选项。以后由 Obtainium 检查并下载正式版更新。
 
 <details>
 <summary>遇到问题再看：安装与校验</summary>

@@ -8,20 +8,32 @@
 
 > Results apply only to the current device, egress network, and test run. Test again after changing carrier, Wi-Fi, VPN, proxy, or network egress.
 
-## Install and update
+## Install
 
 Current version: **1.0.0** (`com.xiaowu7z.cfipoptimizer`)
 
-- [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
-- [Android releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases)
+[⬇️ **Download and install the latest CF 优选IP (recommended)**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk)
 
-Install [Obtainium](https://github.com/ImranR98/Obtainium/releases/latest), open the Add-to-Obtainium link, and confirm **CF 优选IP**. If the link does not open, add this repository manually:
+This is one universal APK. Download it and follow Android's installation prompt—there is no CPU architecture, release, or advanced-setting choice. On the first install, allow your browser to install apps if Android asks.
+
+### Automatic updates (optional)
+
+[🔄 **Already use Obtainium? Enable automatic updates**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
+
+Confirm **CF 优选IP** after the link opens. No regular expressions, CPU architecture, prerelease, or ordering options are needed.
+
+<details>
+<summary>Troubleshooting: install and verification</summary>
+
+If the automatic-update link does not open, install the [latest Obtainium](https://github.com/ImranR98/Obtainium/releases/latest) and add this repository URL only:
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 ```
 
-Every stable APK is accompanied by a same-name `.sha256` file in its GitHub Release.
+Every stable release includes `CF-IP-Optimizer.apk.sha256`; see [all Releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases) for manual download or verification.
+
+</details>
 
 ## Features
 

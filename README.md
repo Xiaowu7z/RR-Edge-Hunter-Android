@@ -8,26 +8,32 @@
 
 > 结果只代表本轮测试的设备、网络出口和时间。切换移动数据、Wi-Fi、运营商、VPN、代理或网络出口后，应重新测试。
 
-## 安装与自动更新
+## 安装
 
 当前版本：**1.0.0**（`com.xiaowu7z.cfipoptimizer`）
 
-- [一键加入 Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
-- [查看 Android Releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases)
+[⬇️ **点击下载安装最新版 CF 优选IP（推荐）**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk)
 
-### Obtainium 添加方法
+这是一个通用 APK：点击下载，下载完成后按 Android 系统提示安装即可。无需选择 CPU 架构、Release 版本或任何高级选项。首次安装时，如系统询问，请允许你正在使用的浏览器安装应用。
 
-1. 安装 [Obtainium 官方最新版本](https://github.com/ImranR98/Obtainium/releases/latest)。大多数新款安卓手机选择 `app-arm64-v8a-release.apk`；不确定处理器架构时选择通用版 `app-release.apk`。
-2. 点击上方“**一键加入 Obtainium**”，选择用 Obtainium 打开，确认添加 **CF 优选IP**。
-3. 首次安装或更新时，按 Android 提示允许 Obtainium 安装未知应用；之后在 Obtainium 中检查更新即可。
+### 自动更新（可选）
 
-若一键链接未自动打开，请在 Obtainium 中选择“添加应用”并粘贴：
+[🔄 **已安装 Obtainium？点击开启自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
+
+点击后确认添加 **CF 优选IP** 即可；不需要填写正则、CPU 架构、预发布、排序等选项。以后由 Obtainium 检查并下载新版本。
+
+<details>
+<summary>遇到问题再看：安装与校验</summary>
+
+若自动更新链接未打开，请先安装 [Obtainium 官方最新版](https://github.com/ImranR98/Obtainium/releases/latest)，然后在“添加应用”中只粘贴下面的仓库地址：
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 ```
 
-每个正式 APK 都附带同名 `.sha256` 校验文件；请以对应 GitHub Release 的校验值为准。
+每个正式版都提供 `CF-IP-Optimizer.apk.sha256` 校验文件；如需手动下载或校验，请查看 [全部 Releases](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases)。
+
+</details>
 
 ## 主要功能
 

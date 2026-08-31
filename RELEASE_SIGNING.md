@@ -72,16 +72,16 @@ apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-relea
 | Secret | `CFIP_ANDROID_KEY_PASSWORD` | 私钥密码 |
 | Secret | `CFIP_ANDROID_CERT_SHA256` | 新正式证书的 SHA-256；可带或不带冒号 |
 
-普通 push 和 pull request 只构建 debug APK，不读取上述签名材料。只有推送 `vX.Y.Z` 标签才会触发正式签名和发布。
+普通 push 和 pull request 只构建 debug APK，不读取上述签名材料。维护者从 `main` 分支在 **Actions → CF 优选IP Android Release → Run workflow** 手动启动正式发布；工作流会在构建、签名验证全部通过后自动创建唯一的 `vX.Y.Z` 标签和 GitHub Release。这样失败的构建不会留下发布标签。
 
-发布前还必须在 **Settings → Environments** 创建 `android-release` 环境：只把上述 Secrets 放入该环境，启用发布前人工审批，并只允许受保护的 `main` 分支和受保护的 `v*` 标签触发。随后在仓库 Rules 中禁止对 `main` 和发布标签的强推或覆盖。这样拥有普通 tag push 权限的人也不能直接拿到签名材料或替换正式版本。
+发布前还必须在 **Settings → Environments** 创建 `android-release` 环境：只把上述 Secrets 放入该环境，启用发布前人工审批，并只允许受保护的 `main` 分支触发。随后在仓库 Rules 中禁止对 `main` 和发布标签的强推或覆盖。这样拥有普通写入权限的人也不能直接拿到签名材料或替换正式版本。
 
 ## 发布硬性检查
 
-1. 标签必须等于 `v<versionName>`，并符合三段数字版本格式。
+1. 工作流只接受 `main` 分支；成功后自动创建等于 `v<versionName>` 的三段数字版本标签。
 2. `applicationId` 必须为 `com.xiaowu7z.cfipoptimizer`。
 3. `versionCode` 必须为正整数，且高于所有历史稳定标签中的版本号。
 4. `CFIP_ANDROID_CERT_SHA256` 必须是已配置的新证书的 64 位 SHA-256 指纹，不能是空值或占位值。
 5. APK 必须通过 v1、v2、v3 签名校验，并与该指纹匹配。
-6. 每个稳定版 Release 只发布一个 universal APK，并附同名 SHA-256 文件。
+6. 每个稳定版 Release 只发布一个固定名称的 universal APK：`CF-IP-Optimizer.apk`，并附同名 SHA-256 文件。这让用户始终可通过 `releases/latest/download/CF-IP-Optimizer.apk` 一键下载最新版。
 7. 已存在的标签或 Release 不得覆盖、替换或补传资产。

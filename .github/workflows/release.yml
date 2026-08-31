@@ -1,26 +1,24 @@
 name: CF 优选IP Android Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: android-release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   release:
-    if: github.repository == 'Xiaowu7z/RR-Edge-Hunter-Android'
+    if: github.repository == 'Xiaowu7z/RR-Edge-Hunter-Android' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: android-release
 
     steps:
-      - name: Checkout tagged source
+      - name: Checkout release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
@@ -41,22 +39,30 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
 
-      - name: Validate tag and version metadata
+      - name: Validate release metadata
         id: version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n 1)"
           VERSION_CODE="$(sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\)/\1/p' app/build.gradle.kts | head -n 1)"
           test -n "$VERSION_NAME"
           test -n "$VERSION_CODE"
-          test "$TAG_VERSION" = "$VERSION_NAME"
+          [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$VERSION_CODE" -ge 1
+          TAG_NAME="v$VERSION_NAME"
+          if git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
+            echo "发布标签 $TAG_NAME 已存在；请先提高 versionName 与 versionCode。" >&2
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME 已存在；禁止覆盖旧版资产。" >&2
+            exit 1
+          fi
           MAX_RELEASE_CODE=0
           while IFS= read -r PREVIOUS_TAG; do
-            test "$PREVIOUS_TAG" = "$GITHUB_REF_NAME" && continue
             PREVIOUS_CODE="$(git show "$PREVIOUS_TAG:app/build.gradle.kts" 2>/dev/null | sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\)/\1/p' | head -n 1 || true)"
             if [[ "$PREVIOUS_CODE" =~ ^[0-9]+$ ]] && [ "$PREVIOUS_CODE" -gt "$MAX_RELEASE_CODE" ]; then
               MAX_RELEASE_CODE="$PREVIOUS_CODE"
@@ -65,6 +71,7 @@ jobs:
           test "$VERSION_CODE" -gt "$MAX_RELEASE_CODE"
           printf 'version=%s\n' "$VERSION_NAME" >> "$GITHUB_OUTPUT"
           printf 'version_code=%s\n' "$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Restore release keystore
         shell: bash
@@ -113,31 +120,38 @@ jobs:
       - name: Prepare release assets
         id: assets
         shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          ASSET_NAME="CF-IP-Optimizer-$VERSION.apk"
+          ASSET_NAME="CF-IP-Optimizer.apk"
           install -m 0644 app/build/outputs/apk/release/app-release.apk "dist/$ASSET_NAME"
           (cd dist && sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256")
           printf 'apk=%s\n' "dist/$ASSET_NAME" >> "$GITHUB_OUTPUT"
           printf 'sha=%s\n' "dist/$ASSET_NAME.sha256" >> "$GITHUB_OUTPUT"
 
-      - name: Create immutable GitHub Release
+      - name: Create tag and immutable GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           APK_PATH: ${{ steps.assets.outputs.apk }}
           SHA_PATH: ${{ steps.assets.outputs.sha }}
           VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME 已存在；禁止覆盖旧版资产。" >&2
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "发布标签 $TAG 已存在；禁止覆盖旧版资产。" >&2
             exit 1
           fi
-          gh release create "$GITHUB_REF_NAME" "$APK_PATH" "$SHA_PATH" \
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在；禁止覆盖旧版资产。" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "CF 优选IP $VERSION"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" "$APK_PATH" "$SHA_PATH" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "CF 优选IP $VERSION" \

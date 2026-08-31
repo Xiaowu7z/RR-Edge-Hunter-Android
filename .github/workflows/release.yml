@@ -1,13 +1,16 @@
-name: CF 优选IP Android Release
+name: CF 优选IP Android Stable Release
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: android-release-${{ github.repository }}
+  group: android-stable-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -18,7 +21,7 @@ jobs:
     environment: android-release
 
     steps:
-      - name: Checkout release source
+      - name: Checkout latest source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
@@ -30,7 +33,9 @@ jobs:
           java-version: "17"
 
       - name: Install Android SDK 34 build tools
+        shell: bash
         run: |
+          set -euo pipefail
           "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-34" "build-tools;34.0.0"
 
       - name: Validate Gradle Wrapper
@@ -39,39 +44,21 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
 
-      - name: Validate release metadata
+      - name: Validate fixed application version
         id: version
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n 1)"
           VERSION_CODE="$(sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\)/\1/p' app/build.gradle.kts | head -n 1)"
-          test -n "$VERSION_NAME"
-          test -n "$VERSION_CODE"
-          [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$VERSION_CODE" -ge 1
-          TAG_NAME="v$VERSION_NAME"
-          if git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
-            echo "发布标签 $TAG_NAME 已存在；请先提高 versionName 与 versionCode。" >&2
-            exit 1
-          fi
-          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME 已存在；禁止覆盖旧版资产。" >&2
-            exit 1
-          fi
-          MAX_RELEASE_CODE=0
-          while IFS= read -r PREVIOUS_TAG; do
-            PREVIOUS_CODE="$(git show "$PREVIOUS_TAG:app/build.gradle.kts" 2>/dev/null | sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\)/\1/p' | head -n 1 || true)"
-            if [[ "$PREVIOUS_CODE" =~ ^[0-9]+$ ]] && [ "$PREVIOUS_CODE" -gt "$MAX_RELEASE_CODE" ]; then
-              MAX_RELEASE_CODE="$PREVIOUS_CODE"
-            fi
-          done < <(git tag -l 'v*.*.*')
-          test "$VERSION_CODE" -gt "$MAX_RELEASE_CODE"
+          test "$VERSION_NAME" = "1.0.0"
+          test "$VERSION_CODE" = "1"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf 'version=%s\n' "$VERSION_NAME" >> "$GITHUB_OUTPUT"
           printf 'version_code=%s\n' "$VERSION_CODE" >> "$GITHUB_OUTPUT"
-          printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Obtainium one-tap link
+        run: python3 tools/verify_obtainium_link.py
 
       - name: Restore release keystore
         shell: bash
@@ -91,9 +78,11 @@ jobs:
           CFIP_RELEASE_KEY_ALIAS: ${{ secrets.CFIP_ANDROID_KEY_ALIAS }}
           CFIP_RELEASE_STORE_PASSWORD: ${{ secrets.CFIP_ANDROID_STORE_PASSWORD }}
           CFIP_RELEASE_KEY_PASSWORD: ${{ secrets.CFIP_ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon :logic-tests:check :app:lintRelease :app:assembleRelease
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :logic-tests:check :app:lintRelease :app:assembleRelease
 
-      - name: Verify APK identity and signature
+      - name: Verify APK identity and release signature
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -103,7 +92,7 @@ jobs:
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
-          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          BUILD_TOOLS="${ANDROID_HOME}/build-tools/34.0.0"
           BADGING="$("$BUILD_TOOLS/aapt" dump badging "$APK")"
           grep -Fq "package: name='com.xiaowu7z.cfipoptimizer' versionCode='$VERSION_CODE' versionName='$VERSION'" <<<"$BADGING"
           VERIFY="$("$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK")"
@@ -115,43 +104,51 @@ jobs:
           [[ "$EXPECTED_CERT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           test "$CERT_DIGEST" = "$EXPECTED_CERT_DIGEST"
 
-      - name: Prepare release assets
-        id: assets
+      - name: Prepare the only Android release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          ASSET_NAME="CF-IP-Optimizer.apk"
-          install -m 0644 app/build/outputs/apk/release/app-release.apk "dist/$ASSET_NAME"
-          (cd dist && sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256")
-          printf 'apk=%s\n' "dist/$ASSET_NAME" >> "$GITHUB_OUTPUT"
-          printf 'sha=%s\n' "dist/$ASSET_NAME.sha256" >> "$GITHUB_OUTPUT"
+          install -m 0644 app/build/outputs/apk/release/app-release.apk dist/CF-IP-Optimizer.apk
+          (cd dist && sha256sum CF-IP-Optimizer.apk > CF-IP-Optimizer.apk.sha256)
 
-      - name: Create tag and immutable GitHub Release
+      - name: Replace old releases with the latest signed APK
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          APK_PATH: ${{ steps.assets.outputs.apk }}
-          SHA_PATH: ${{ steps.assets.outputs.sha }}
           VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "发布标签 $TAG 已存在；禁止覆盖旧版资产。" >&2
-            exit 1
-          fi
+          TAG="v$VERSION"
+          NOTES_FILE="${RUNNER_TEMP}/stable-release-notes.md"
+          printf '%s\n\n%s\n\n%s\n' \
+            "CF 优选IP Android 正式版 $VERSION" \
+            "构建提交：\`$GITHUB_SHA\`" \
+            "包含直接 IP 优选、亚洲狩猎、IPv4/IPv6、自定义 IP 导入，以及冠军 IP 同步到 Cloudflare A/AAAA 灰云记录。" \
+            > "$NOTES_FILE"
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在；禁止覆盖旧版资产。" >&2
-            exit 1
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
           fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git push origin ":refs/tags/$TAG"
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "CF 优选IP $VERSION"
+          git tag -fa "$TAG" "$GITHUB_SHA" -m "CF 优选IP Android $VERSION"
           git push origin "refs/tags/$TAG"
-          gh release create "$TAG" "$APK_PATH" "$SHA_PATH" \
+          gh release create "$TAG" \
+            dist/CF-IP-Optimizer.apk \
+            dist/CF-IP-Optimizer.apk.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "CF 优选IP $VERSION" \
-            --generate-notes \
+            --title "CF 优选IP Android $VERSION" \
+            --notes-file "$NOTES_FILE" \
             --latest
+
+          if gh release view testing --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete testing --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          elif git ls-remote --exit-code --tags origin refs/tags/testing >/dev/null 2>&1; then
+            git push origin :refs/tags/testing
+          fi

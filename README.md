@@ -18,23 +18,17 @@
 
 这是一个通用 APK，不需要选择 CPU 架构。下载完成后按 Android 系统提示安装；如系统询问，请允许当前浏览器安装应用。
 
-### 测试通道
-
-[🧪 **手动下载当前测试包**](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/download/testing/CF-IP-Optimizer-testing.apk)
-
-测试包与正式版暂时都保留版本号 **1.0.0**，自动更新工具不会把它识别为更高版本；请手动下载并覆盖安装。测试通道使用相同正式签名，但不会替换正式版 `latest` 链接。
-
 ### Obtainium 自动更新
 
-[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
+[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22%5ECF-IP-Optimizer%5C%5C%5C%5C.apk%24%5C%22%2C%5C%22invertAPKFilter%5C%22%3Afalse%2C%5C%22includePrereleases%5C%22%3Afalse%7D%22%2C%22overrideSource%22%3Anull%7D)
 
-打开后确认添加 **CF 优选IP**，无需设置正则、CPU 架构、预发布或排序选项。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”，其余选项保持默认：
+按钮已经预设正式 Release、唯一 APK 文件和通用架构。打开后只需确认添加 **CF 优选IP**，不要修改高级选项。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 ```
 
-正式 Release 同时提供 `CF-IP-Optimizer.apk.sha256`。
+仓库只保留最新正式 APK；正式 Release 同时提供 `CF-IP-Optimizer.apk.sha256`。
 
 ## 一键默认值
 

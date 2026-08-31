@@ -4,6 +4,8 @@ app/build/
 logic-tests/build/
 local.properties
 toolchain/
+__pycache__/
+*.pyc
 
 *.apk
 *.aab

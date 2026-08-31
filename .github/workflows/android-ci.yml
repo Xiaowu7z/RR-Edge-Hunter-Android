@@ -41,6 +41,9 @@ jobs:
       - name: Run deterministic tests, lint, and debug build
         run: ./gradlew --no-daemon :logic-tests:check :app:lintDebug :app:assembleDebug
 
+      - name: Verify Obtainium one-tap link
+        run: python3 tools/verify_obtainium_link.py
+
       - name: Upload debug APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

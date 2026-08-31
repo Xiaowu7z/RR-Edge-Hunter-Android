@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Validate the README's one-tap Obtainium configuration."""
+"""Validate the README's simple one-tap Obtainium link."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import re
 from urllib.parse import parse_qs, urlsplit
@@ -11,15 +10,9 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
-PREFIX = "obtainium://app/"
+PREFIX = "obtainium://add/"
 EXPECTED_REPOSITORY = "https://github.com/Xiaowu7z/RR-Edge-Hunter-Android"
-EXPECTED_PACKAGE = "com.xiaowu7z.cfipoptimizer"
-EXPECTED_APP = {
-    "id": EXPECTED_PACKAGE,
-    "url": EXPECTED_REPOSITORY,
-    "author": "Xiaowu7z",
-    "name": "CF IP Optimizer",
-}
+EXPECTED_DEEP_LINK = PREFIX + EXPECTED_REPOSITORY
 
 
 def main() -> int:
@@ -31,19 +24,22 @@ def main() -> int:
     if match is None:
         raise SystemExit("README 缺少 Obtainium 一键添加链接")
 
-    redirect = urlsplit(match.group(1))
+    link = match.group(1)
+    if "%" in link:
+        raise SystemExit("Obtainium 简单深链不得携带百分号编码")
+
+    redirect = urlsplit(link)
     values = parse_qs(redirect.query, strict_parsing=True)
     deep_link = values.get("r", [""])[0]
-    if not deep_link.startswith(PREFIX):
-        raise SystemExit("Obtainium 跳转参数不是 obtainium://app 深链")
+    if deep_link != EXPECTED_DEEP_LINK:
+        raise SystemExit("Obtainium 跳转参数必须是仓库地址的简单 add 深链")
 
-    app = json.loads(deep_link[len(PREFIX) :])
-    if app != EXPECTED_APP:
-        raise SystemExit("Obtainium 必须使用不含高级参数的最小官方配置")
-    if not app["name"].isascii():
-        raise SystemExit("Obtainium 深链中的应用名称必须仅使用 ASCII 字符")
+    source = deep_link.removeprefix(PREFIX)
+    parsed_source = urlsplit(source)
+    if parsed_source.scheme != "https" or parsed_source.netloc != "github.com":
+        raise SystemExit("Obtainium 来源必须是公开 GitHub HTTPS 仓库")
 
-    print("Obtainium minimal one-tap link: OK")
+    print("Obtainium simple one-tap link: OK")
     return 0
 
 

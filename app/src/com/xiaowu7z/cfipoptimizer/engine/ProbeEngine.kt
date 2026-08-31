@@ -122,6 +122,159 @@ object ProbeEngine {
     }
 
     /**
+     * 约 1 秒真实下载测速所需的最大请求体。普通模式按目标带宽准备，
+     * 最大带宽模式保留更大的上限；读取端仍会在时间窗到达后主动关闭。
+     */
+    fun speedRequestBytes(expectedMbps: Int, maximum: Boolean = false): Long {
+        val boundedMbps = expectedMbps.coerceIn(1, 2_000).toLong()
+        val floor = if (maximum) 64_000_000L else 4_000_000L
+        val requested = boundedMbps * 125_000L * 3L / 2L
+        return maxOf(floor, requested).coerceAtMost(256_000_000L)
+    }
+
+    /** 从 CF-RAY 的末段读取实际 Cloudflare POP，例如 xxx-HKG -> HKG。 */
+    fun edgeColo(cfRay: String?): String {
+        val suffix = cfRay.orEmpty().substringAfterLast('-', "").trim().uppercase(Locale.ROOT)
+        return if (Regex("^[A-Z]{3}$").matches(suffix)) suffix else ""
+    }
+
+    /**
+     * 固定候选 IP、严格 TLS/SNI/Host，并在约 1 秒下载窗口内测真实吞吐。
+     * 必须同时通过真实 socket 对端匹配和 CF-RAY 校验，避免把重定向、
+     * 系统代理或非 Cloudflare 响应误当成可填入节点的入口 IP。
+     */
+    suspend fun probeSpeedWindow(
+        targetIp: String,
+        requestedBytes: Long,
+        sampleMillis: Long = 1_000L,
+        timeoutSec: Int = 5,
+        testHost: String = SPEED_HOST,
+        targetPort: Int = 443,
+        log: (String) -> Unit = {}
+    ): ProbeResult {
+        val targetAddress = verifiedCloudflareTarget(targetIp)
+            ?: return ProbeResult(ok = false, error = "候选必须是 Cloudflare 官方网段内的 IP", targetIp = targetIp)
+        val host = testHost.trim().lowercase(Locale.ROOT)
+        if (host.isEmpty() || host.any { it.isWhitespace() }) {
+            return ProbeResult(ok = false, error = "测试主机无效", targetIp = targetIp)
+        }
+        if (targetPort !in 1..65535) {
+            return ProbeResult(ok = false, error = "端口无效", targetIp = targetIp)
+        }
+
+        val boundedBytes = requestedBytes.coerceIn(32_768L, 256_000_000L)
+        val boundedWindow = sampleMillis.coerceIn(250L, 3_000L)
+        val events = StringBuilder()
+        var timing: ProbeTimingListener.Timings? = null
+        var actualRemote: InetAddress? = null
+        val client = newColdClient(
+            host, targetIp, timeoutSec, events,
+            { timing = it },
+            { actualRemote = it }
+        )
+        val request = Request.Builder()
+            .url("https://${httpsAuthority(host, targetPort)}/__down?bytes=$boundedBytes")
+            .header("Cache-Control", "no-store")
+            .get()
+            .build()
+        val call = client.newCall(request)
+        var result: ProbeResult? = null
+
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+            cont.invokeOnCancellation {
+                call.cancel()
+                log(">>> 1 秒下载测速已取消")
+            }
+            try {
+                call.execute().use { response ->
+                    var downloaded = 0L
+                    val bodyStartNs = System.nanoTime()
+                    val body = response.body
+                    if (body != null) {
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (downloaded < boundedBytes) {
+                                val elapsedMs = (System.nanoTime() - bodyStartNs) / 1_000_000L
+                                if (elapsedMs >= boundedWindow && downloaded >= 32_768L) break
+                                val wanted = minOf(buffer.size.toLong(), boundedBytes - downloaded).toInt()
+                                if (wanted <= 0) break
+                                val count = input.read(buffer, 0, wanted)
+                                if (count < 0) break
+                                downloaded += count
+                            }
+                        }
+                    }
+                    val bodyEndNs = System.nanoTime()
+                    val bodyMs = ((bodyEndNs - bodyStartNs) / 1_000_000.0).coerceAtLeast(0.001)
+                    val t = timing ?: ProbeTimingListener.Timings()
+                    val remote = actualRemote ?: t.actualRemoteAddr
+                    val remoteMatches = addressesEqual(targetAddress, remote)
+                    val rayColo = edgeColo(response.header("CF-RAY"))
+                    val handshakeOk = response.handshake != null
+                    val enough = downloaded >= 32_768L
+                    val ok = response.code in 200..399 && handshakeOk && remoteMatches &&
+                        rayColo.isNotEmpty() && enough
+                    val speed = if (ok) (downloaded * 8 / 1_000_000.0) / (bodyMs / 1_000.0) else 0.0
+                    val remoteIsV6 = remote is Inet6Address
+                    result = ProbeResult(
+                        ok = ok,
+                        error = when {
+                            response.code !in 200..399 -> "HTTP ${response.code}"
+                            !handshakeOk -> "TLS 握手失败"
+                            !remoteMatches -> "实际远端与候选 IP 不一致，结果已拒绝"
+                            rayColo.isEmpty() -> "响应缺少有效 CF-RAY，结果已拒绝"
+                            !enough -> "下载样本不足：$downloaded B"
+                            else -> ""
+                        },
+                        family = if (remote == null) "未知" else if (remoteIsV6) "IPv6" else "IPv4",
+                        targetIp = targetIp,
+                        actualRemoteAddress = remote?.hostAddress.orEmpty(),
+                        targetMatchesRemote = remoteMatches,
+                        remoteIsIpv6 = remoteIsV6,
+                        sni = host,
+                        certHostname = peerCn(response),
+                        certVerified = handshakeOk,
+                        httpCode = response.code,
+                        httpVersion = response.protocol.toString(),
+                        dnsMs = t.dnsMs(),
+                        tcpMs = t.tcpMs(),
+                        tlsMs = t.tlsMs(),
+                        ttfbMs = t.ttfbMs(),
+                        bodyMs = bodyMs,
+                        totalMs = if (t.totalMs() > 0.0) t.totalMs() else bodyMs,
+                        callTotalMs = if (t.callTotalMs() > 0.0) t.callTotalMs() else bodyMs,
+                        bytesDownloaded = downloaded,
+                        bytesTarget = boundedBytes,
+                        payloadMbps = speed,
+                        completeTransferMbps = speed,
+                        callTotalMbps = speed,
+                        colo = rayColo,
+                        events = events.toString()
+                    )
+                }
+                cont.resumeWith(Result.success(Unit))
+            } catch (e: java.io.IOException) {
+                result = ProbeResult(
+                    ok = false,
+                    error = if (cont.isCancelled) "已取消" else "${e.javaClass.simpleName}: ${e.message?.take(100)}",
+                    targetIp = targetIp,
+                    events = events.toString()
+                )
+                cont.resumeWith(Result.success(Unit))
+            } catch (e: Exception) {
+                result = ProbeResult(
+                    ok = false,
+                    error = "${e.javaClass.simpleName}: ${e.message?.take(100)}",
+                    targetIp = targetIp,
+                    events = events.toString()
+                )
+                cont.resumeWith(Result.success(Unit))
+            }
+        }
+        return result ?: ProbeResult(ok = false, error = "no result", targetIp = targetIp)
+    }
+
+    /**
      * 单次冷连接下载探测（suspend：取消时中断 Call + trace Call）。
      */
     suspend fun probeDownload(
@@ -168,7 +321,8 @@ object ProbeEngine {
                     // Phase 2.2.1：Pre/Micro/Baseline 不需要 POP。
                     // 只有最终 Full/显式 Debug 才做 trace，避免每个候选 IP 额外再建一次冷 TLS 连接。
                     val enoughBody = bytes <= 0L || bodyBytes >= (bytes * 0.8).toLong()
-                    val (colo, loc) = if (includeTrace && resp.isSuccessful && enoughBody) {
+                    val rayColo = edgeColo(resp.header("CF-RAY"))
+                    val (traceColo, loc) = if (includeTrace && resp.isSuccessful && enoughBody) {
                         try {
                             val traceCall = newTraceCall(host, targetIp, targetPort, timeoutSec, events)
                             activeCalls.add(traceCall)
@@ -180,6 +334,7 @@ object ProbeEngine {
                     } else {
                         Pair("", "")
                     }
+                    val colo = traceColo.ifBlank { rayColo }
                     result = buildResult(targetIp, host, t, resp, bodyBytes, bytes, colo, loc, events.toString())
                 }
                 cont.resumeWith(Result.success(Unit))

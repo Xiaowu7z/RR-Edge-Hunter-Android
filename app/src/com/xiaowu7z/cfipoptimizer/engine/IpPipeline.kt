@@ -32,16 +32,13 @@ data class IpMetric(
     val popDrift: Boolean = false,
     val edgeScore: Int = 0
 ) {
-    // A single lucky success is not enough for a Telegram/video recommendation.
-    // With the fixed three Full rounds this requires at least two successes.
+    // 至少两次独立的 1 秒真实下载样本都成功，才允许复制到节点。
     val isNodeUsable: Boolean get() =
-        (!routeValidationRequired || route?.ok == true) && full.isNotEmpty() && fullSuccessRatePct >= 66.0
-    // DNS changes have a larger blast radius than copying an IP for a local
-    // trial, so only a fixed three-round result with no failed sample may be
-    // offered as the per-family DNS champion.
+        (!routeValidationRequired || route?.ok == true) &&
+            full.size >= 2 && full.all { it.ok } && fullSuccessRatePct >= 99.9
+    // DNS 写入影响范围更大，只允许已完成复测且可靠下限为正的候选。
     val isDnsSyncEligible: Boolean get() =
-        isNodeUsable && full.size == 3 && full.all { it.ok } &&
-            fullSuccessRatePct >= 99.9 && floorMbps > 0.0
+        isNodeUsable && full.size >= 2 && floorMbps > 0.0
     // Kept as a source-compatible alias for callers from the first 1.0.0
     // implementation.  The default product is now direct-IP ranking, while an
     // Argo hostname route check is an optional extra gate.
@@ -64,10 +61,13 @@ data class IpMetric(
  */
 object IpPipeline {
     private const val ROUTE_TIMEOUT_SECONDS = 8
-    private const val PRE_TIMEOUT_SECONDS = 8
-    private const val MICRO_TIMEOUT_SECONDS = 12
-    private const val FULL_TIMEOUT_SECONDS = 30
+    private const val PRE_TIMEOUT_SECONDS = 5
+    private const val SPEED_TIMEOUT_SECONDS = 5
 
+    /**
+     * microLimit 表示延迟预筛后进入真实下载的候选数；finalLimit 表示复测数。
+     * 保留原字段名是为了兼容 1.0.0 的内部接口，测速已不再下载固定大文件。
+     */
     data class ModeParams(
         val preBytes: Long,
         val microBytes: Long,
@@ -77,47 +77,53 @@ object IpPipeline {
         val fullRounds: Int,
         val preConcurrency: Int,
         val microConcurrency: Int,
-        val fullConcurrency: Int
+        val fullConcurrency: Int,
+        val earlyStop: Boolean
     )
 
     val BALANCED = ModeParams(
-        preBytes = 64_000L,
-        microBytes = 512_000L,
-        fullBytes = 2_000_000L,
-        microLimit = 12,
-        finalLimit = 5,
-        fullRounds = 3,
-        preConcurrency = 6,
-        microConcurrency = 3,
-        fullConcurrency = 1
+        preBytes = 16_000L,
+        microBytes = 0L,
+        fullBytes = 0L,
+        microLimit = 10,
+        finalLimit = 2,
+        fullRounds = 2,
+        preConcurrency = 32,
+        microConcurrency = 1,
+        fullConcurrency = 1,
+        earlyStop = true
     )
 
     val ASIA_HUNT = ModeParams(
-        preBytes = 64_000L,
-        microBytes = 512_000L,
-        fullBytes = 2_000_000L,
-        microLimit = 16,
-        finalLimit = 6,
-        fullRounds = 3,
-        preConcurrency = 6,
-        microConcurrency = 3,
-        fullConcurrency = 1
+        preBytes = 16_000L,
+        microBytes = 0L,
+        fullBytes = 0L,
+        microLimit = 10,
+        finalLimit = 3,
+        fullRounds = 2,
+        preConcurrency = 32,
+        microConcurrency = 1,
+        fullConcurrency = 1,
+        earlyStop = true
     )
 
-    /**
-     * Make the selected expected bandwidth affect the amount of evidence.  A
-     * higher target receives a longer Full payload, while the bounded stage
-     * counts and concurrency remain unchanged.  This keeps the field from
-     * being a cosmetic label without turning a phone into a traffic generator.
-     */
+    val MAX_BANDWIDTH = ModeParams(
+        preBytes = 16_000L,
+        microBytes = 0L,
+        fullBytes = 0L,
+        microLimit = 10,
+        finalLimit = 3,
+        fullRounds = 2,
+        preConcurrency = 32,
+        microConcurrency = 1,
+        fullConcurrency = 1,
+        earlyStop = false
+    )
+
+    /** 兼容旧调用；目标带宽现在直接控制 1 秒测速请求上限。 */
     fun forExpectedMbps(base: ModeParams, expectedMbps: Int): ModeParams {
-        val fullBytes = when {
-            expectedMbps <= 50 -> 2_000_000L
-            expectedMbps <= 100 -> 4_000_000L
-            expectedMbps <= 200 -> 6_000_000L
-            else -> 8_000_000L
-        }
-        return base.copy(fullBytes = fullBytes)
+        expectedMbps.coerceIn(1, 2_000)
+        return base
     }
 
     data class Candidate(val ip: String, val source: String)
@@ -140,12 +146,17 @@ object IpPipeline {
         else -> 0
     }
 
-    fun estimateTrafficUpperBoundMb(candidateCount: Int, params: ModeParams): Double {
+    fun estimateTrafficUpperBoundMb(
+        candidateCount: Int,
+        params: ModeParams,
+        expectedMbps: Int = 100
+    ): Double {
         if (candidateCount <= 0) return 0.0
-        val micro = minOf(candidateCount, params.microLimit)
-        val final = minOf(micro, params.finalLimit)
-        val bytes = candidateCount * params.preBytes + micro * params.microBytes +
-            final * params.fullRounds * params.fullBytes
+        val shortlist = minOf(candidateCount, params.microLimit)
+        val confirmations = minOf(shortlist, params.finalLimit)
+        val requestBytes = ProbeEngine.speedRequestBytes(expectedMbps, maximum = !params.earlyStop)
+        val bytes = candidateCount * params.preBytes +
+            (shortlist + confirmations) * requestBytes
         return bytes / 1_000_000.0
     }
 
@@ -157,6 +168,7 @@ object IpPipeline {
         params: ModeParams,
         asiaHunt: Boolean,
         argoPort: Int = 443,
+        expectedMbps: Int = 100,
         networkInvalid: () -> Boolean = { false },
         onStage: (Stage) -> Unit = {},
         log: (String) -> Unit = {}
@@ -179,7 +191,7 @@ object IpPipeline {
         val routeResults: Map<Candidate, ProbeEngine.ArgoRouteResult> = if (routeValidationRequired) {
             onStage(Stage("高级节点兼容复核", 0, deduped.size))
             val routeDone = AtomicInteger(0)
-            parallel(deduped, params.preConcurrency) { candidate ->
+            parallel(deduped, minOf(params.preConcurrency, 16)) { candidate ->
                 coroutineContext.ensureActive()
                 if (checkNetwork()) {
                     candidate to ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidate.ip, error = "网络变化")
@@ -207,7 +219,7 @@ object IpPipeline {
             return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
         }
 
-        onStage(Stage("边缘速度预检", 0, routeEligible.size))
+        onStage(Stage("并发延迟预筛", 0, routeEligible.size))
         val preDone = AtomicInteger(0)
         val preResults = parallel(routeEligible, params.preConcurrency) { candidate ->
             coroutineContext.ensureActive()
@@ -220,12 +232,10 @@ object IpPipeline {
                     timeoutSec = PRE_TIMEOUT_SECONDS,
                     testHost = ProbeEngine.SPEED_HOST,
                     targetPort = 443,
-                    // Direct-IP mode has no user-host route result carrying a
-                    // POP, so obtain one trace during the bounded preflight.
-                    includeTrace = !routeValidationRequired,
+                    includeTrace = false,
                     log = log
                 )
-                onStage(Stage("边缘速度预检", preDone.incrementAndGet(), routeEligible.size))
+                onStage(Stage("并发延迟预筛", preDone.incrementAndGet(), routeEligible.size))
                 candidate to result
             }
         }.toMap()
@@ -236,107 +246,96 @@ object IpPipeline {
             val failures = deduped.map { metric(it, routeResults[it], routeValidationRequired, preResults[it], null, emptyList()) }
             return@coroutineScope FamilyResult(rank(failures), rankAsia(failures), emptyMap())
         }
-        val microCandidates = chooseForMicro(preEligible, preResults, routeResults, params.microLimit, asiaHunt)
 
-        onStage(Stage("小流量筛选", 0, microCandidates.size))
-        val microDone = AtomicInteger(0)
-        val microResults = parallel(microCandidates, params.microConcurrency) { candidate ->
+        val speedCandidates = chooseForSpeed(preEligible, preResults, params.microLimit)
+        val requestBytes = ProbeEngine.speedRequestBytes(expectedMbps, maximum = !params.earlyStop)
+        val samples = LinkedHashMap<Candidate, MutableList<ProbeEngine.ProbeResult>>()
+
+        suspend fun sample(candidate: Candidate): ProbeEngine.ProbeResult {
             coroutineContext.ensureActive()
-            if (checkNetwork()) {
-                candidate to failed(candidate.ip, "网络变化")
-            } else {
-                val result = ProbeEngine.probeDownload(
-                    targetIp = candidate.ip,
-                    bytes = params.microBytes,
-                    timeoutSec = MICRO_TIMEOUT_SECONDS,
-                    testHost = ProbeEngine.SPEED_HOST,
-                    targetPort = 443,
-                    includeTrace = false,
-                    log = log
-                )
-                onStage(Stage("小流量筛选", microDone.incrementAndGet(), microCandidates.size))
-                candidate to result
-            }
-        }.toMap()
-        if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
-
-        val finalCandidates = chooseForFull(microCandidates, preResults, microResults, routeResults, params.finalLimit, asiaHunt)
-        if (finalCandidates.isEmpty()) {
-            // Keep every original candidate visible.  Candidates rejected by a
-            // staged gate have no Full samples and therefore carry a zero score
-            // instead of quietly disappearing from the audit trail.
-            val metrics = deduped.map { candidate ->
-                metric(candidate, routeResults[candidate], routeValidationRequired, preResults[candidate], microResults[candidate], emptyList())
-            }
-            return@coroutineScope FamilyResult(rank(metrics), rankAsia(metrics), emptyMap())
+            if (checkNetwork()) return failed(candidate.ip, "网络变化")
+            return ProbeEngine.probeSpeedWindow(
+                targetIp = candidate.ip,
+                requestedBytes = requestBytes,
+                sampleMillis = 1_000L,
+                timeoutSec = SPEED_TIMEOUT_SECONDS,
+                testHost = ProbeEngine.SPEED_HOST,
+                targetPort = 443,
+                log = log
+            )
         }
 
-        // Round-major scheduling gives each finalist an early first result while
-        // still guaranteeing an exact fixed number of Full attempts per IP.
-        val schedule: List<Pair<Int, Candidate>> = buildList {
-            repeat(params.fullRounds) { round ->
-                finalCandidates.forEach { add(round to it) }
-            }
-        }
-        onStage(Stage("完整测速（固定 ${params.fullRounds} 轮）", 0, schedule.size))
-        val fullDone = AtomicInteger(0)
-        val fullResults = parallel(schedule, params.fullConcurrency) { (_, candidate) ->
-            coroutineContext.ensureActive()
-            if (checkNetwork()) {
-                candidate to failed(candidate.ip, "网络变化")
-            } else {
-                val result = ProbeEngine.probeDownload(
-                    targetIp = candidate.ip,
-                    bytes = params.fullBytes,
-                    timeoutSec = FULL_TIMEOUT_SECONDS,
-                    testHost = ProbeEngine.SPEED_HOST,
-                    targetPort = 443,
-                    includeTrace = false,
-                    log = log
-                )
-                onStage(Stage("完整测速（固定 ${params.fullRounds} 轮）", fullDone.incrementAndGet(), schedule.size))
-                candidate to result
+        var earlyWinner: Candidate? = null
+        onStage(Stage("1 秒真实下载测速", 0, speedCandidates.size))
+        for ((index, candidate) in speedCandidates.withIndex()) {
+            val first = sample(candidate)
+            samples.getOrPut(candidate) { mutableListOf() }.add(first)
+            onStage(Stage("1 秒真实下载测速", index + 1, speedCandidates.size))
+            if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
+
+            if (params.earlyStop && first.ok && first.completeTransferMbps >= expectedMbps) {
+                onStage(Stage("达标候选复测", 0, 1))
+                val second = sample(candidate)
+                samples.getValue(candidate).add(second)
+                onStage(Stage("达标候选复测", 1, 1))
+                if (second.ok && second.completeTransferMbps >= expectedMbps) {
+                    earlyWinner = candidate
+                    log("${candidate.ip} 连续两次达到 $expectedMbps Mbps，提前结束")
+                    break
+                }
             }
         }
         if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
 
-        val perIpFull = LinkedHashMap<String, MutableList<ProbeEngine.ProbeResult>>()
-        fullResults.forEach { (candidate, probe) -> perIpFull.getOrPut(candidate.ip) { mutableListOf() }.add(probe) }
-        // Return all candidates, not only finalists.  A failed Pre/Micro gate
-        // is evidence too; its empty Full series remains an explicit zero in
-        // the result rather than being silently dropped.
+        if (earlyWinner == null) {
+            val confirmationCandidates = speedCandidates
+                .filter { candidate ->
+                    val current = samples[candidate].orEmpty()
+                    current.firstOrNull()?.ok == true && !(current.size >= 2 && current.any { !it.ok })
+                }
+                .sortedWith(
+                    compareByDescending<Candidate> { samples[it]?.firstOrNull()?.completeTransferMbps ?: 0.0 }
+                        .thenBy { it.ip }
+                )
+                .take(params.finalLimit)
+            onStage(Stage("最快候选复测", 0, confirmationCandidates.size))
+            confirmationCandidates.forEachIndexed { index, candidate ->
+                if (samples[candidate].orEmpty().size < params.fullRounds) {
+                    samples.getOrPut(candidate) { mutableListOf() }.add(sample(candidate))
+                }
+                onStage(Stage("最快候选复测", index + 1, confirmationCandidates.size))
+            }
+        }
+        if (checkNetwork()) return@coroutineScope FamilyResult(emptyList(), emptyList(), emptyMap(), invalid = true)
+
         val metrics = deduped.map { candidate ->
-            metric(candidate, routeResults[candidate], routeValidationRequired, preResults[candidate], microResults[candidate], perIpFull[candidate.ip].orEmpty())
+            val candidateSamples = samples[candidate].orEmpty()
+            metric(
+                candidate,
+                routeResults[candidate],
+                routeValidationRequired,
+                preResults[candidate],
+                candidateSamples.firstOrNull(),
+                candidateSamples
+            )
         }
         val pops = LinkedHashMap<String, Int>()
         metrics.map { it.primaryPop }.filter { it.isNotBlank() }
             .forEach { pop -> pops[pop.uppercase()] = (pops[pop.uppercase()] ?: 0) + 1 }
-        FamilyResult(rank(metrics), rankAsia(metrics), pops)
+        val ranked = if (params.earlyStop) rank(metrics) else rankMaximum(metrics)
+        FamilyResult(ranked, if (asiaHunt) rankAsia(metrics) else ranked, pops)
     }
 
-    private fun chooseForMicro(
+    private fun chooseForSpeed(
         candidates: List<Candidate>,
         pre: Map<Candidate, ProbeEngine.ProbeResult>,
-        route: Map<Candidate, ProbeEngine.ArgoRouteResult>,
-        limit: Int,
-        asiaHunt: Boolean
+        limit: Int
     ): List<Candidate> = candidates.sortedWith(
-        compareByDescending<Candidate> { pre[it]?.completeTransferMbps ?: 0.0 }
-            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty().ifBlank { pre[it]?.colo.orEmpty() }) else 0 }
-            .thenBy { it.ip }
-    ).take(limit)
-
-    private fun chooseForFull(
-        candidates: List<Candidate>,
-        pre: Map<Candidate, ProbeEngine.ProbeResult>,
-        micro: Map<Candidate, ProbeEngine.ProbeResult>,
-        route: Map<Candidate, ProbeEngine.ArgoRouteResult>,
-        limit: Int,
-        asiaHunt: Boolean
-    ): List<Candidate> = candidates.filter { micro[it]?.ok == true }.sortedWith(
-        compareByDescending<Candidate> { micro[it]?.completeTransferMbps ?: 0.0 }
-            .thenByDescending { if (asiaHunt) popPriority(route[it]?.colo.orEmpty().ifBlank { pre[it]?.colo.orEmpty() }) else 0 }
-            .thenBy { it.ip }
+        compareBy<Candidate> {
+            pre[it]?.ttfbMs?.takeIf { value -> value >= 0.0 } ?: Double.MAX_VALUE
+        }.thenBy {
+            pre[it]?.tcpMs?.takeIf { value -> value >= 0.0 } ?: Double.MAX_VALUE
+        }.thenBy { it.ip }
     ).take(limit)
 
     private fun failed(ip: String, message: String) = ProbeEngine.ProbeResult(ok = false, targetIp = ip, error = message)
@@ -359,10 +358,11 @@ object IpPipeline {
         val floor = if (full.isEmpty() || full.any { !it.ok }) 0.0 else min
         val variation = variation(speeds)
         val ttfb = median(full.filter { it.ok }.map { it.ttfbMs })
-        val pops = listOfNotNull(
-            route?.takeIf { it.ok }?.colo?.uppercase(),
-            pre?.takeIf { it.ok }?.colo?.uppercase()
-        ).filter { it.isNotBlank() }
+        val pops = buildList {
+            route?.takeIf { it.ok }?.colo?.uppercase()?.takeIf { it.isNotBlank() }?.let { add(it) }
+            pre?.takeIf { it.ok }?.colo?.uppercase()?.takeIf { it.isNotBlank() }?.let { add(it) }
+            full.filter { it.ok }.map { it.colo.uppercase() }.filter { it.isNotBlank() }.forEach { add(it) }
+        }
         val primary = pops.groupingBy { it }.eachCount().entries
             .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenByDescending { popPriority(it.key) })
             .firstOrNull()?.key.orEmpty()
@@ -397,6 +397,19 @@ object IpPipeline {
             .thenByDescending { it.fullSuccessRatePct }
             .thenByDescending { it.minCompleteMbps }
             .thenByDescending { it.avgCompleteMbps }
+            .thenBy { it.variationPct }
+            .thenBy { if (it.medianTtfbMs < 0.0) Double.MAX_VALUE else it.medianTtfbMs }
+            .thenBy { it.ip }
+    )
+
+    /** 最大带宽按两次成功样本的平均下载速度排序，再看峰值与可靠下限。 */
+    fun rankMaximum(metrics: List<IpMetric>): List<IpMetric> = metrics.sortedWith(
+        compareByDescending<IpMetric> { it.isNodeUsable }
+            .thenByDescending { !it.routeValidationRequired || it.route?.ok == true }
+            .thenByDescending { it.avgCompleteMbps }
+            .thenByDescending { it.maxCompleteMbps }
+            .thenByDescending { it.floorMbps }
+            .thenByDescending { it.fullSuccessRatePct }
             .thenBy { it.variationPct }
             .thenBy { if (it.medianTtfbMs < 0.0) Double.MAX_VALUE else it.medianTtfbMs }
             .thenBy { it.ip }

@@ -22,10 +22,10 @@ data class CandidatePoolSelection(
  * 每协议族上限约束。[snapshotSource] 只是结果来源标签，不放宽网段校验。
  */
 object CandidatePool {
-    const val MAX_V4_CANDIDATES = 48
-    const val MAX_V6_CANDIDATES = 24
-    const val MAX_IMPORTED_PER_FAMILY = 24
-    const val MAX_IMPORTED_V6 = 10
+    const val MAX_V4_CANDIDATES = 100
+    const val MAX_V6_CANDIDATES = 100
+    const val MAX_IMPORTED_PER_FAMILY = 60
+    const val MAX_IMPORTED_V6 = 60
 
     fun build(
         snapshot: AuthorizedHostSnapshot,
@@ -69,9 +69,9 @@ object CandidatePool {
         sampledImported.forEach { add(it, "用户IP池") }
 
         if (includeOfficialSamples) {
-            // Android 不展开大网段。每个公布网段取 3 个确定性分位点，
-            // 在 IPv4 48 / IPv6 24 总上限内尽量覆盖不同 anycast 入口。
-            val perRange = 3
+            // Android 不展开大网段。按协议族取确定性分位点，在每族 100 个
+            // 总上限内覆盖更多 anycast 入口，同时保持扫描有界。
+            val perRange = if (family == "IPv6") 15 else 7
             CfRanges.sampleOfficial(family, perRange, familyLimit).forEach { add(it, "CF官方网段抽样") }
         }
 

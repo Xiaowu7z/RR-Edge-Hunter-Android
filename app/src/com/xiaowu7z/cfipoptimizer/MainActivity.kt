@@ -198,7 +198,7 @@ class MainActivity : Activity() {
                 setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("100")
             }
             addView(expectedBandwidthInput)
-            addView(label("用于决定 Full 测速样本大小和达标标记；数值越高，会消耗更多流量。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("用于判断是否提前结束；每个候选按约 1 秒真实下载测速。最大带宽模式会测试完整前 10 名，流量更多。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(label("连接验证：TLS 严格校验 ✓ · 公开测速端口 443", 11.5f, good, true).apply { setPadding(0, dp(12), 0, 0) })
         }
         root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
@@ -215,8 +215,8 @@ class MainActivity : Activity() {
 
         advancedSettings.addPanel(12) {
             addView(heading("测速策略"))
-            addView(segmented(listOf("均衡", "亚洲狩猎"), initial = "亚洲狩猎") { strategy = it; refreshStatus() })
-            addView(label("亚洲狩猎仍以成功率与稳定速度为主，POP 只在同档成绩中加分，不会让慢速 HKG 压过高速入口。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(segmented(listOf("均衡", "亚洲狩猎", "最大带宽"), initial = "亚洲狩猎") { strategy = it; refreshStatus() })
+            addView(label("均衡/亚洲狩猎在连续两次达到目标后提前结束；最大带宽会测完延迟前 10 名并复测最快候选。亚洲 POP 只在同档成绩中加分。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(heading("线路标签").apply { setPadding(0, dp(16), 0, dp(8)) })
             addView(segmented(listOf("自动", "中国移动", "中国电信", "中国联通"), listOf("自动", "移动", "电信", "联通"), "自动") { operatorLabel = it; refreshStatus() })
             addView(label("标签用于历史和对比；不会模拟运营商网络或改变 IP 池。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
@@ -494,8 +494,11 @@ class MainActivity : Activity() {
         val argoPort = parsedArgoPort ?: 443
         val families = when (protocol) { "IPv4" -> listOf("IPv4"); "IPv6" -> listOf("IPv6"); else -> listOf("IPv4", "IPv6") }.filterNot { it == "IPv6" && !network.ipv6Available }
         if (families.isEmpty()) { Toast.makeText(this, "所选协议族没有可用链路", Toast.LENGTH_LONG).show(); return }
-        val baseParams = if (strategy == "亚洲狩猎") IpPipeline.ASIA_HUNT else IpPipeline.BALANCED
-        val params = IpPipeline.forExpectedMbps(baseParams, expectedMbps)
+        val params = when (strategy) {
+            "亚洲狩猎" -> IpPipeline.ASIA_HUNT
+            "最大带宽" -> IpPipeline.MAX_BANDWIDTH
+            else -> IpPipeline.BALANCED
+        }
         val lease = beginRunLease()
         logQueue.clear(); logLines.clear(); logs.text = ""; progress.progress = 0; percent.text = "0%"; switchTo(run, "run")
         val networkChanged = AtomicBoolean(false)
@@ -534,11 +537,25 @@ class MainActivity : Activity() {
                     if (!isCurrentRun(lease)) return@launch
                     val candidates = selectCandidates(speedSnapshot, family, lease)
                     if (candidates.isEmpty()) { appendRunLog(lease, "$family 无安全候选，跳过"); all[family] = emptyList(); asia[family] = emptyList(); popCounts[family] = emptyMap(); return@forEachIndexed }
-                    appendRunLog(lease, "$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params))} MB")
-                    val runResult = IpPipeline.runFamily(host, wsPath, family, candidates, params, strategy == "亚洲狩猎", argoPort, { networkChanged.get() }, { state ->
-                        val span = 92 / families.size; val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total
-                        setStage(lease, "$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}"); updateProgress(lease, idx * span + (f * span).toInt())
-                    }, { appendRunLog(lease, "  $it") })
+                    appendRunLog(lease, "$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params, expectedMbps))} MB")
+                    val runResult = IpPipeline.runFamily(
+                        argoHost = host,
+                        wsPath = wsPath,
+                        family = family,
+                        candidates = candidates,
+                        params = params,
+                        asiaHunt = strategy == "亚洲狩猎",
+                        argoPort = argoPort,
+                        expectedMbps = expectedMbps,
+                        networkInvalid = { networkChanged.get() },
+                        onStage = { state ->
+                            val span = 92 / families.size
+                            val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total
+                            setStage(lease, "$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}")
+                            updateProgress(lease, idx * span + (f * span).toInt())
+                        },
+                        log = { appendRunLog(lease, "  $it") }
+                    )
                     if (!isCurrentRun(lease)) return@launch
                     invalid = invalid || runResult.invalid; all[family] = runResult.ranked; asia[family] = runResult.asiaRanked; popCounts[family] = runResult.popCounts
                 }
@@ -617,18 +634,18 @@ class MainActivity : Activity() {
             val ranked = all[family].orEmpty()
             val usable = ranked.filter { it.isNodeUsable }
             val rejected = ranked.filterNot { it.isNodeUsable }
-            results.addView(label(if (strategy == "亚洲狩猎") "$family · 亚洲狩猎" else "$family · 完整排名", 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
+            results.addView(label(when (strategy) { "亚洲狩猎" -> "$family · 亚洲狩猎"; "最大带宽" -> "$family · 最大带宽"; else -> "$family · 均衡排名" }, 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
             if (strategy == "亚洲狩猎") {
                 results.addView(label("公开 trace：" + listOf("HKG", "NRT", "SIN", "ICN", "TPE").joinToString(" · ") { "$it ${pops[family]?.get(it) ?: 0}" }, 12f, secondary))
                 addMetricSection("推荐榜（稳定速度优先）", asia[family].orEmpty().filter { it.isNodeUsable }.take(20), !invalid, expectedMbps)
             } else addMetricSection("可直接填入节点的 IP", usable.take(20), !invalid, expectedMbps)
-            if (rejected.isNotEmpty()) addMetricSection("未通过 / 未进入 Full（仅诊断）", rejected.take(12), false, expectedMbps)
+            if (rejected.isNotEmpty()) addMetricSection("未复测 / 未通过（仅诊断）", rejected.take(12), false, expectedMbps)
         }; switchTo(result, "result")
     }
     private fun addMetricSection(title: String, metrics: List<IpMetric>, allowCopy: Boolean, expectedMbps: Int) {
         results.addView(label(title, 14f, primary, true).apply { setPadding(0, dp(14), 0, dp(6)) })
         val dnsChampionIndex = if (allowCopy) metrics.indexOfFirst { it.isDnsSyncEligible } else -1
-        if (metrics.isEmpty()) results.addView(label("（没有通过多轮测速的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
+        if (metrics.isEmpty()) results.addView(label("（没有通过两次真实下载复测的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
             results.addView(
                 metricCard(
                     index,
@@ -648,7 +665,7 @@ class MainActivity : Activity() {
         addView(label("$medal  ${metric.ip}${if (allowCopy) "  ⧉" else ""}", 15f, primary, true).apply {
             if (allowCopy) setOnClickListener { copy(metric.ip, "IP") }
         })
-        addView(label("${metric.family} · ${metric.source} · Full ${metric.full.size} 轮", 11f, muted))
+        addView(label("${metric.family} · ${metric.source} · 1 秒下载样本 ${metric.full.size} 次", 11f, muted))
         val route = metric.route
         if (metric.routeValidationRequired) {
             if (route?.ok == true) {
@@ -663,9 +680,9 @@ class MainActivity : Activity() {
         if (metric.primaryPop.isNotBlank()) addView(label("入口：${metric.primaryPop} · 亚洲评分 ${metric.edgeScore}${if (metric.popDrift) " · POP 漂移" else ""}", 11f, if (metric.edgeScore > 0) good else secondary, metric.edgeScore > 0))
         when {
             metric.pre?.ok == false -> addView(label("预检失败；未进入 Full，已按 0 计入。", 10.5f, warn))
-            metric.micro?.ok == false -> addView(label("小流量筛选失败；未进入 Full，已按 0 计入。", 10.5f, warn))
-            metric.full.isEmpty() -> addView(label("未进入 Full 固定轮次；已按 0 计入。", 10.5f, warn))
-            metric.full.any { !it.ok } -> addView(label("含失败轮次，已按 0 Mbps 计入。", 10.5f, warn))
+            metric.micro?.ok == false -> addView(label("1 秒下载测速失败；未进入复测。", 10.5f, warn))
+            metric.full.isEmpty() -> addView(label("未进入 1 秒真实下载测速。", 10.5f, warn))
+            metric.full.any { !it.ok } -> addView(label("复测含失败样本，不作为可用节点推荐。", 10.5f, warn))
         }
         if (allowCopy) {
             addView(primaryButton("复制到节点地址 / server") { copy(metric.ip, "IP") }, lp(8))

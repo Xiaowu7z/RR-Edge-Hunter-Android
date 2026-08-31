@@ -4,7 +4,7 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。默认不需要填写任何域名：应用把 `speed.cloudflare.com` 固定到每个候选 IP 的 `443` 端口，保留严格 TLS 证书、SNI、Host 与真实对端校验，再通过分层、多轮真实下载寻找更快、更稳定的入口。
+**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。默认不需要填写任何域名：应用把 `speed.cloudflare.com` 固定到每个候选 IP 的 `443` 端口，保留严格 TLS 证书、SNI、Host 与真实对端校验，再通过并发延迟预筛与约 1 秒真实下载复测，快速找到能直接填入节点且下载速度更高的入口。
 
 优选结果是一个裸 IPv4 或 IPv6。把它填入 VMess / VLESS 等节点的 `address` 或 `server` 字段即可；节点原来的端口、UUID、协议、TLS SNI、HTTP Host、WS Path 等参数全部保持不变。
 
@@ -36,20 +36,28 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 | --- | --- |
 | IP 协议 | IPv4 |
 | 期望带宽 | 100 Mbps |
-| 测速策略 | 亚洲狩猎 |
+| 默认测速策略 | 亚洲狩猎 |
+| 可选策略 | 均衡 / 亚洲狩猎 / 最大带宽 |
 | 测速身份 | `speed.cloudflare.com:443` |
 | 候选来源 | Cloudflare 官方池；可叠加用户导入的官方 IP |
 | 输出用途 | 只替换节点 `address/server` |
 
-亚洲狩猎仍以成功率、复核底线、最低与平均吞吐和波动为主；HKG、NRT、SIN、ICN、TPE 等 POP 只在同档成绩中加分。
+### 三种测速策略
+
+- **均衡**：连续两次达到目标带宽后提前结束，速度与流量消耗兼顾。
+- **亚洲狩猎**：同样支持达标早停；速度和稳定性优先，亚洲 POP 仅作同档加分。
+- **最大带宽**：不提前停止，测完延迟前 10 名，并复测最快 3 个，适合寻找下载峰值最高的入口；会消耗更多流量。
+
+三个策略均先从每族最多 100 个候选中并发预筛，再让延迟前 10 名进入约 1 秒真实下载。均衡与亚洲狩猎在某个 IP 连续两次达到目标带宽后提前结束；最大带宽会测完前 10 名，再复测最快的 3 个。亚洲狩猎仍以稳定下载速度为主，HKG、NRT、SIN、ICN、TPE 等 POP 只在同档成绩中加分。
 
 ## 工作方式
 
 1. 获取 `speed.cloudflare.com` 当前 DNS 种子，并加载 Cloudflare 官方 CIDR 的确定性受控抽样。
 2. 如用户导入名单，将其中属于 Cloudflare 官方网段的地址加入候选。
 3. 固定 `speed.cloudflare.com:443` 到每个候选 IP，保留系统证书、SNI、Host 和实际 TCP 对端验证。
-4. 执行 Pre 快筛、Micro 复核和多轮 Full 下载；失败轮次按 `0 Mbps` 纳入成功率和稳定性。
-5. 按复核底线、成功率、最低/平均吞吐、波动和 TTFB 排名，并标注是否达到设定带宽。
+4. 对每族最多 100 个候选做 `16 KB` 并发延迟预筛，只保留前 10 名进入真实下载。
+5. 每个入围 IP 下载约 1 秒，并从 `CF-RAY` 确认实际 Cloudflare POP；均衡/亚洲狩猎对达标者立即复测并可提前结束，最大带宽测完前 10 名后复测最快 3 个。
+6. 只有至少两次下载样本全部成功的 IP 才能复制到节点或同步 DNS；按可靠下限、平均吞吐、波动和 TTFB 排名。
 
 默认流程测量当前手机网络到 Cloudflare 入口的质量，不需要 VPS 源站 IP，也不要求 Argo 域名。
 
@@ -61,7 +69,7 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 - TXT、CSV、TSV、JSON、Base64 文件；
 - HTTPS IP 订阅链接。
 
-导入 IP 不要求与 `speed.cloudflare.com` 当前 DNS 求交，但必须属于 Cloudflare 官方 CIDR。私网、回环、链路本地、保留地址、非 CF 地址和错误协议族会被拒绝或忽略；CIDR 抽样、候选量、并发和真实下载流量均有限制。文件选择使用 Android 系统选择器，不申请读取全部存储空间权限。
+导入 IP 不要求与 `speed.cloudflare.com` 当前 DNS 求交，但必须属于 Cloudflare 官方 CIDR。私网、回环、链路本地、保留地址、非 CF 地址和错误协议族会被拒绝或忽略；CIDR 抽样、每族最多 100 个候选、并发和真实下载流量均有限制。文件选择使用 Android 系统选择器，不申请读取全部存储空间权限。
 
 第三方非官方反代不会混入默认官方池。
 

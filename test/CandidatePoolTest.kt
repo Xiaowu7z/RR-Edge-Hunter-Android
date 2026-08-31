@@ -26,6 +26,8 @@ fun main() {
     )
     check("直接IP模式不需要用户域名", direct.candidates.isNotEmpty(), direct.toString())
     check("直接IP官方抽样全部属于CF", direct.candidates.all { CfRanges.isCloudflare(InetAddress.getByName(it.ip)) })
+    check("每个协议族候选上限已扩展到100", CandidatePool.MAX_V4_CANDIDATES == 100 && CandidatePool.MAX_V6_CANDIDATES == 100)
+    check("默认官方池覆盖更多入口且仍受控", direct.candidates.size in 40..100, "size=${direct.candidates.size}")
 
     val snapshot = AuthorizedHostSnapshot(
         host = "argo.example.com",

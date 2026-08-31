@@ -21,7 +21,7 @@ fun main() {
             variationPct = variation,
             primaryPop = pop,
             edgeScore = IpPipeline.popPriority(pop) * 10 + 1,
-            full = List(3) { ProbeEngine.ProbeResult(ok = true, targetIp = ip) }
+            full = List(2) { ProbeEngine.ProbeResult(ok = true, targetIp = ip) }
         )
 
     val direct = metric("104.16.0.10", "HKG", floor = 50.0, avg = 60.0)
@@ -30,13 +30,13 @@ fun main() {
         "启用高级复核后必须有通过的路由结果",
         !direct.copy(routeValidationRequired = true).isNodeUsable
     )
-    check("完整三轮全成功才允许作为 DNS 冠军", direct.isDnsSyncEligible)
+    check("连续两次真实下载成功才允许作为 DNS 冠军", direct.isDnsSyncEligible)
     check(
-        "不足固定三轮不得作为 DNS 冠军",
-        !direct.copy(full = direct.full.take(2)).isDnsSyncEligible
+        "不足两次复测不得作为 DNS 冠军",
+        !direct.copy(full = direct.full.take(1)).isDnsSyncEligible
     )
     check(
-        "任一 Full 轮失败不得作为 DNS 冠军",
+        "任一复测样本失败不得作为 DNS 冠军",
         !direct.copy(
             full = direct.full.dropLast(1) + ProbeEngine.ProbeResult(ok = false, targetIp = direct.ip)
         ).isDnsSyncEligible
@@ -52,19 +52,27 @@ fun main() {
             floorMbps = 0.0,
             full = listOf(
                 ProbeEngine.ProbeResult(ok = true, targetIp = direct.ip),
-                ProbeEngine.ProbeResult(ok = true, targetIp = direct.ip),
                 ProbeEngine.ProbeResult(ok = false, targetIp = direct.ip)
             )
         ).isDnsSyncEligible
     )
 
-    val target50 = IpPipeline.forExpectedMbps(IpPipeline.ASIA_HUNT, 50)
-    val target100 = IpPipeline.forExpectedMbps(IpPipeline.ASIA_HUNT, 100)
-    val target500 = IpPipeline.forExpectedMbps(IpPipeline.ASIA_HUNT, 500)
+    check("均衡模式达标复测后允许提前结束", IpPipeline.BALANCED.earlyStop)
+    check("亚洲狩猎达标复测后允许提前结束", IpPipeline.ASIA_HUNT.earlyStop)
+    check("最大带宽模式必须测完整个前十", !IpPipeline.MAX_BANDWIDTH.earlyStop)
     check(
-        "期望带宽实际调整Full样本大小",
-        target50.fullBytes < target100.fullBytes && target100.fullBytes < target500.fullBytes,
-        "${target50.fullBytes}/${target100.fullBytes}/${target500.fullBytes}"
+        "三个模式都只让延迟前十进入真实下载",
+        listOf(IpPipeline.BALANCED, IpPipeline.ASIA_HUNT, IpPipeline.MAX_BANDWIDTH).all { it.microLimit == 10 }
+    )
+    val normalBytes = ProbeEngine.speedRequestBytes(100, maximum = false)
+    val maximumBytes = ProbeEngine.speedRequestBytes(100, maximum = true)
+    check("最大带宽模式准备更大的有界下载窗口", maximumBytes > normalBytes && maximumBytes <= 256_000_000L)
+    check("CF-RAY 能解析实际 POP", ProbeEngine.edgeColo("abc123-HKG") == "HKG")
+    check("无效 CF-RAY 不产生 POP", ProbeEngine.edgeColo("invalid") == "")
+    check(
+        "最大带宽流量上限高于均衡但仍有界",
+        IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) >
+            IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.BALANCED, 100)
     )
 
     val slowHkg = metric("104.16.0.1", "HKG", floor = 1.0, avg = 1.2)

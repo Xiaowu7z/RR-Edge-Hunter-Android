@@ -4,7 +4,7 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** is a local Android Cloudflare ingress-IP selector. The default scan requires no user hostname: it pins `speed.cloudflare.com` to each candidate on port `443`, retains normal TLS certificate, SNI, Host, and actual-peer validation, and performs staged multi-round downloads.
+**CF 优选IP** is a local Android Cloudflare ingress-IP selector. The default scan requires no user hostname: it pins `speed.cloudflare.com` to each candidate on port `443`, retains normal TLS certificate, SNI, Host, and actual-peer validation, and uses a concurrent latency preflight plus confirmed, roughly one-second real-download samples.
 
 The output is a bare IPv4 or IPv6 address. Put it only in the VMess/VLESS node's `address` or `server` field. Keep the node's original port, UUID, protocol, TLS SNI, HTTP Host, and WebSocket Path unchanged.
 
@@ -30,26 +30,34 @@ Leave the other options at their defaults. The repository retains only the lates
 | --- | --- |
 | Address family | IPv4 |
 | Target bandwidth | 100 Mbps |
-| Strategy | Asia Hunt |
+| Default strategy | Asia Hunt |
+| Available strategies | Balanced / Asia Hunt / Maximum Bandwidth |
 | Measurement identity | `speed.cloudflare.com:443` |
 | Candidate source | Official Cloudflare pool, optionally plus imported official-range IPs |
 | Output | Replace node `address/server` only |
 
-Asia Hunt prioritizes reliability, round floor, minimum/average throughput, and variance. POP labels such as HKG, NRT, SIN, ICN, and TPE are tie-breakers only.
+All strategies preflight up to 100 candidates per family and pass only the ten lowest-latency candidates to real downloads. Balanced and Asia Hunt stop only after one IP reaches the target twice; Maximum Bandwidth tests all ten and confirms the fastest three. Asia Hunt still ranks stable speed first, using HKG, NRT, SIN, ICN, and TPE only as tie-breakers.
+
+### Strategies
+
+- **Balanced:** stop after the target is reached twice, balancing speed and traffic.
+- **Asia Hunt:** the same confirmed early-stop behavior, with Asian POPs used only as same-tier tie-breakers.
+- **Maximum Bandwidth:** test all ten shortlisted IPs and confirm the fastest three; this mode uses more traffic.
 
 ## How it works
 
 1. Load current `speed.cloudflare.com` DNS seeds and a bounded deterministic sample from Cloudflare-published CIDRs.
 2. Optionally add imported addresses that belong to official Cloudflare ranges.
 3. Pin `speed.cloudflare.com:443` to each candidate while retaining platform certificate, SNI, Host, and actual TCP-peer validation.
-4. Run Pre, Micro, and repeated Full downloads; failed Full rounds count as `0 Mbps`.
-5. Rank by reliability, round floor, minimum/average throughput, variance, and TTFB.
+4. Concurrently preflight up to 100 candidates per family with 16 KB and retain the ten lowest-latency successes.
+5. Measure each shortlisted IP with a roughly one-second download and require a valid `CF-RAY`; Balanced/Asia Hunt can stop after a target-reaching confirmation, while Maximum Bandwidth measures all ten and confirms the fastest three.
+6. Only candidates with at least two successful samples can be copied to a node or synchronized to DNS; rank them by reliable floor, average throughput, variance, and TTFB.
 
 The default workflow measures the current Android network to Cloudflare ingress. It needs neither a VPS origin IP nor an Argo hostname.
 
 ## Custom candidate pools
 
-The advanced panel supports long paste, IPv4/IPv6 endpoint notation, bounded CIDRs, TXT/CSV/TSV/JSON/Base64 files, and public HTTPS subscriptions. Imported candidates do not need to intersect the speed hostname's current DNS answers, but every tested address must belong to an official Cloudflare CIDR. Private, reserved, non-Cloudflare, wrong-family, and malformed entries are rejected; candidates, concurrency, and traffic are bounded.
+The advanced panel supports long paste, IPv4/IPv6 endpoint notation, bounded CIDRs, TXT/CSV/TSV/JSON/Base64 files, and public HTTPS subscriptions. Imported candidates do not need to intersect the speed hostname's current DNS answers, but every tested address must belong to an official Cloudflare CIDR. Private, reserved, non-Cloudflare, wrong-family, and malformed entries are rejected; each family is capped at 100 candidates, and concurrency and traffic are bounded.
 
 Android's system document picker is used, so broad storage permission is not requested. Unofficial third-party relays are not mixed into the default official pool.
 

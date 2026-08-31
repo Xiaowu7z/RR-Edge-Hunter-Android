@@ -42,8 +42,13 @@ fun main() = runBlocking {
         candidates.last() in maximumOrder.take(20),
         maximumOrder.take(20).joinToString { it.ip }
     )
-    val normalOrder = IpPipeline.orderForSpeedCandidates(candidates, pre, 10, false)
-    check("普通模式仍按低RTT前十", normalOrder.take(10) == candidates.take(10))
+    val normalOrder = IpPipeline.orderForSpeedCandidates(candidates, pre, 20, true)
+    check("均衡与亚洲模式同样保留20个候选", normalOrder.take(20).size == 20)
+    check(
+        "均衡与亚洲模式不会被最低RTT单一簇垄断",
+        candidates.last() in normalOrder.take(20),
+        normalOrder.take(20).joinToString { it.ip }
+    )
 
     val routeResults = mapOf(
         candidates[0] to ProbeEngine.ArgoRouteResult(ok = false, targetIp = candidates[0].ip),

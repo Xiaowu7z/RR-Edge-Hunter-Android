@@ -61,18 +61,21 @@ fun main() {
     check("亚洲狩猎达标复测后允许提前结束", IpPipeline.ASIA_HUNT.earlyStop)
     check("最大带宽模式必须测完整个多样候选集", !IpPipeline.MAX_BANDWIDTH.earlyStop)
     check(
-        "普通模式前十、最大带宽模式扩大到二十",
-        IpPipeline.BALANCED.microLimit == 10 && IpPipeline.ASIA_HUNT.microLimit == 10 &&
+        "三个模式都使用二十个跨延迟候选",
+        IpPipeline.BALANCED.microLimit == 20 && IpPipeline.ASIA_HUNT.microLimit == 20 &&
             IpPipeline.MAX_BANDWIDTH.microLimit == 20
     )
     val normalBytes = ProbeEngine.speedRequestBytes(100, maximum = false)
     val maximumBytes = ProbeEngine.speedRequestBytes(100, maximum = true)
-    check("最大带宽模式准备更大的有界下载窗口", maximumBytes > normalBytes && maximumBytes <= 256_000_000L)
+    check(
+        "三个模式使用相同的稳健有界下载容量",
+        maximumBytes == normalBytes && normalBytes >= 64_000_000L && maximumBytes <= 256_000_000L
+    )
     check("CF-RAY 能解析实际 POP", ProbeEngine.edgeColo("abc123-HKG") == "HKG")
     check("无效 CF-RAY 不产生 POP", ProbeEngine.edgeColo("invalid") == "")
     check(
-        "最大带宽流量上限高于均衡但仍有界",
-        IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) >
+        "均衡与最大带宽最坏流量上限一致且仍有界",
+        IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) ==
             IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.BALANCED, 100)
     )
     check(

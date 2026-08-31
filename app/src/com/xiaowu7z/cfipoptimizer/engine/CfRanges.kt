@@ -1,13 +1,20 @@
 package com.xiaowu7z.cfipoptimizer.engine
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.math.BigInteger
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /**
  * Cloudflare 官方网段：在线获取 + 内置备用 + CIDR 判定（字节级，v4/v6 通用）。
@@ -33,50 +40,83 @@ object CfRanges {
     @Volatile var v4FromOnline: Boolean = false
     @Volatile var v6FromOnline: Boolean = false
 
-    /** 在线刷新官方网段（失败保持内置备用）。 */
-    fun refresh() {
+    /** 在线刷新官方网段（失败保持内置备用，取消会立即停止请求）。 */
+    suspend fun refresh() {
+        val client = OkHttpClient.Builder()
+            .proxy(Proxy.NO_PROXY)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .build()
+        refreshWithFetcher { url -> fetchText(client, url) }
+    }
+
+    /** Separated for deterministic cancellation tests; production always supplies the strict client above. */
+    internal suspend fun refreshWithFetcher(fetch: suspend (String) -> String?) {
         try {
-            val client = OkHttpClient.Builder()
-                .proxy(Proxy.NO_PROXY)
-                .followRedirects(false)
-                .followSslRedirects(false)
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .callTimeout(15, TimeUnit.SECONDS)
-                .build()
-            val v4 = fetchText(client, "https://www.cloudflare.com/ips-v4")
-            val v6 = fetchText(client, "https://www.cloudflare.com/ips-v6")
+            val v4 = fetch("https://www.cloudflare.com/ips-v4")
+            val v6 = fetch("https://www.cloudflare.com/ips-v6")
             val parsed4 = parseRanges(v4, v4 = true)
             val parsed6 = parseRanges(v6, v4 = false)
             if (parsed4.isNotEmpty()) { rangesV4 = parsed4; v4FromOnline = true }
             if (parsed6.isNotEmpty()) { rangesV6 = parsed6; v6FromOnline = true }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // 保持内置备用
         }
     }
 
-    private fun fetchText(client: OkHttpClient, url: String): String? {
-        return try {
-            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val contentLength = response.body?.contentLength() ?: -1L
-                if (contentLength > MAX_RANGE_RESPONSE_BYTES) return null
-                val body = response.body ?: return null
-                body.byteStream().use { input ->
-                    val output = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(4096)
-                    var total = 0
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        total += count
-                        if (total > MAX_RANGE_RESPONSE_BYTES) return null
-                        output.write(buffer, 0, count)
-                    }
-                    output.toString(Charsets.UTF_8.name())
-                }
+    private suspend fun fetchText(client: OkHttpClient, url: String): String? {
+        val call = client.newCall(Request.Builder().url(url).get().build())
+        return awaitRangeResponse(call)
+    }
+
+    /**
+     * Bridges an OkHttp call into structured concurrency. Cancelling the scan closes the
+     * active socket/body read instead of leaving a dispatcher thread waiting for timeout.
+     */
+    internal suspend fun awaitRangeResponse(call: Call): String? = suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation { call.cancel() }
+        if (!continuation.isActive) {
+            call.cancel()
+            return@suspendCancellableCoroutine
+        }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) continuation.resume(null)
             }
-        } catch (e: Exception) { null }
+
+            override fun onResponse(call: Call, response: Response) {
+                val text = try {
+                    response.use { readRangeResponse(it) }
+                } catch (_: Exception) {
+                    null
+                }
+                if (continuation.isActive) continuation.resume(text)
+            }
+        })
+    }
+
+    private fun readRangeResponse(response: Response): String? {
+        if (!response.isSuccessful) return null
+        val body = response.body ?: return null
+        if (body.contentLength() > MAX_RANGE_RESPONSE_BYTES) return null
+        body.byteStream().use { input ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(4096)
+            var total = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_RANGE_RESPONSE_BYTES) return null
+                output.write(buffer, 0, count)
+            }
+            return output.toString(Charsets.UTF_8.name())
+        }
     }
 
     private fun parseRanges(text: String?, v4: Boolean): List<String> {
@@ -158,12 +198,17 @@ object CfRanges {
     }
 
     /**
-     * 从每个 Cloudflare 官方网段中确定性、均匀地抽取少量地址。
+     * 从每个 Cloudflare 官方网段中按本轮 seed 有界轮转抽取少量地址。
      *
-     * 这里不会展开整个 CIDR，也不会随机扫描互联网。调用方仍须使用获授权
-     * 域名的 SNI/Host 与系统证书校验逐个确认候选是否适合该 Argo 节点。
+     * 这里不会展开整个 CIDR，也不会随机扫描互联网。调用方仍须使用公开测速
+     * 主机或获授权 Argo 域名的 SNI/Host 与系统证书校验逐个确认候选。
      */
-    fun sampleOfficial(family: String, perRange: Int = 2, limit: Int = 64): List<String> {
+    fun sampleOfficial(
+        family: String,
+        perRange: Int = 2,
+        limit: Int = 64,
+        seed: Long = 0L
+    ): List<String> {
         if (perRange <= 0 || limit <= 0) return emptyList()
         val ranges = when (family) {
             "IPv4" -> rangesV4
@@ -171,7 +216,7 @@ object CfRanges {
             else -> return emptyList()
         }
         val result = LinkedHashSet<String>()
-        for (cidr in ranges) {
+        for ((rangeIndex, cidr) in ranges.withIndex()) {
             val parts = cidr.split('/')
             if (parts.size != 2) continue
             val networkAddress = try { InetAddress.getByName(parts[0]) } catch (_: Exception) { continue }
@@ -185,25 +230,30 @@ object CfRanges {
             if (prefix !in 0..bits) continue
             val span = BigInteger.ONE.shiftLeft(bits - prefix)
             val skipEdges = bits == 32 && bits - prefix >= 2
-            val first = if (skipEdges) BigInteger.ONE else BigInteger.ZERO
+            val skipIpv6Network = bits == 128 && span > BigInteger.ONE
+            val first = if (skipEdges || skipIpv6Network) BigInteger.ONE else BigInteger.ZERO
             val last = span.subtract(if (skipEdges) BigInteger.valueOf(2L) else BigInteger.ONE)
             if (last < first) continue
             val usable = last.subtract(first).add(BigInteger.ONE)
             val count = minOf(perRange, if (usable > BigInteger.valueOf(Int.MAX_VALUE.toLong())) perRange else usable.toInt())
             val network = BigInteger(1, networkAddress.address)
             repeat(count) { index ->
-                // IPv4 uses interior quantiles. For very broad IPv6 allocations,
-                // stay near the published network prefix instead of inventing a
-                // random-looking address deep in the /32. Every result is still
-                // only an experimental candidate until SNI/TLS route validation.
-                val offset = if (bits == 128) {
-                    BigInteger.valueOf((index + 1).toLong())
-                        .coerceAtMost(usable.subtract(BigInteger.ONE))
-                } else {
-                    val numerator = usable.multiply(BigInteger.valueOf((index + 1).toLong()))
-                    numerator.divide(BigInteger.valueOf((count + 1).toLong()))
-                        .coerceAtMost(usable.subtract(BigInteger.ONE))
-                }
+                // Partitioned, seeded selection rotates bounded official samples
+                // between runs without expanding a CIDR or trusting an external
+                // pool.  Broad IPv6 ranges deliberately stay inside the first
+                // 65,536 addresses; arbitrary deep /32 addresses are unlikely to
+                // be useful service endpoints.
+                val selectionSpan = if (bits == 128) {
+                    usable.min(BigInteger.valueOf(65_536L))
+                } else usable
+                val partitionStart = selectionSpan.multiply(BigInteger.valueOf(index.toLong()))
+                    .divide(BigInteger.valueOf(count.toLong()))
+                val partitionEnd = selectionSpan.multiply(BigInteger.valueOf((index + 1L)))
+                    .divide(BigInteger.valueOf(count.toLong()))
+                val partitionSize = partitionEnd.subtract(partitionStart).max(BigInteger.ONE)
+                val mixed = mixSeed(seed, rangeIndex, index)
+                val jitter = BigInteger.valueOf(mixed and Long.MAX_VALUE).mod(partitionSize)
+                val offset = partitionStart.add(jitter).coerceAtMost(usable.subtract(BigInteger.ONE))
                 val value = network.add(first).add(offset)
                 val bytes = ByteArray(bits / 8)
                 val raw = value.toByteArray()
@@ -215,5 +265,13 @@ object CfRanges {
             if (result.size >= limit) break
         }
         return result.take(limit)
+    }
+
+    private fun mixSeed(seed: Long, rangeIndex: Int, sampleIndex: Int): Long {
+        var value = seed xor (rangeIndex.toLong() * -7046029254386353131L) xor
+            (sampleIndex.toLong() * -4658895280553007687L)
+        value = (value xor (value ushr 30)) * -4658895280553007687L
+        value = (value xor (value ushr 27)) * -7723592293110705685L
+        return value xor (value ushr 31)
     }
 }

@@ -50,7 +50,10 @@ import java.util.concurrent.atomic.AtomicLong
 class MainActivity : Activity() {
     companion object { private const val REQUEST_OPEN_IP_FILE = 711 }
 
-    private class RunLease(val generation: Long) {
+    private class RunLease(
+        val generation: Long,
+        val sampleSeed: Long = System.nanoTime() xor System.currentTimeMillis()
+    ) {
         var job: Job? = null
         var unregisterWatcher: (() -> Unit)? = null
     }
@@ -110,6 +113,7 @@ class MainActivity : Activity() {
     private val logLines = ArrayDeque<String>()
     private val logHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val flushing = AtomicBoolean(false)
+    private val inputParseGeneration = AtomicLong(0L)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -198,7 +202,7 @@ class MainActivity : Activity() {
                 setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("100")
             }
             addView(expectedBandwidthInput)
-            addView(label("用于判断是否提前结束；每个候选按约 1 秒真实下载测速。最大带宽模式会测试完整前 10 名，流量更多。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("用于判断是否提前结束；每个入围候选按约 1 秒真实下载测速。最大带宽模式会测试 20 个多样候选，流量更多。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(label("连接验证：TLS 严格校验 ✓ · 公开测速端口 443", 11.5f, good, true).apply { setPadding(0, dp(12), 0, 0) })
         }
         root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
@@ -216,7 +220,7 @@ class MainActivity : Activity() {
         advancedSettings.addPanel(12) {
             addView(heading("测速策略"))
             addView(segmented(listOf("均衡", "亚洲狩猎", "最大带宽"), initial = "亚洲狩猎") { strategy = it; refreshStatus() })
-            addView(label("均衡/亚洲狩猎在连续两次达到目标后提前结束；最大带宽会测完延迟前 10 名并复测最快候选。亚洲 POP 只在同档成绩中加分。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("均衡/亚洲狩猎在连续两次达到目标后提前结束；最大带宽会测试低 RTT 主体与跨延迟分位共 20 个候选，复测失败会自动补位。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(heading("线路标签").apply { setPadding(0, dp(16), 0, dp(8)) })
             addView(segmented(listOf("自动", "中国移动", "中国电信", "中国联通"), listOf("自动", "移动", "电信", "联通"), "自动") { operatorLabel = it; refreshStatus() })
             addView(label("标签用于历史和对比；不会模拟运营商网络或改变 IP 池。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
@@ -248,10 +252,10 @@ class MainActivity : Activity() {
 
         advancedSettings.addPanel(12) {
             addView(heading("自定义 IP 池 · 可选"))
-            addView(label("无需导入：默认已包含公开测速域名 DNS 种子和 Cloudflare 官方 CIDR 分散抽样。也可长复制、上传文件或订阅 IP 池。", 11.5f, muted))
+            addView(label("无需导入：默认包含公开测速域名 DNS 种子和 Cloudflare 官方 CIDR 每轮有界轮转样本。也可长复制、上传文件或订阅 IP 池。", 11.5f, muted))
             customPanel = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE
                 customIpsInput = input("粘贴 IPv4 / IPv6 / IP:443 / CIDR；支持长复制", true); addView(customIpsInput, lp(12))
-                addView(primaryButton("应用粘贴内容") { applyManualIps(true) }, lp(8))
+                addView(primaryButton("应用粘贴内容") { applyManualIpsAsync(true) }, lp(8))
                 addView(secondaryButton("导入 IP 文件") { openIpFilePicker() }, lp(8))
                 addView(label("TXT / CSV / TSV / JSON / Base64；CIDR 仅受控抽样。文件和订阅最大 1 MiB。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
                 subscriptionInput = input("https://example.com/cf-ips.txt").apply { setSingleLine(true) }; addView(subscriptionInput, lp(10))
@@ -268,7 +272,8 @@ class MainActivity : Activity() {
 
         advancedSettings.addPanel(12) {
             addView(heading("安全边界"))
-            addView(label("• 候选仅限 Cloudflare 官方网段，并受总量、并发和流量上限约束。", 12f, secondary))
+            addView(label("• 默认池仅使用 Cloudflare 官方网段；用户导入仅接受公网 IP，并受总量、并发和流量上限约束。", 12f, secondary))
+            addView(label("• 外部候选必须通过严格 TLS/SNI/真实对端/CF-RAY 下载复测，失败结果不可复制。", 12f, secondary))
             addView(label("• 默认只测 speed.cloudflare.com，不要求你提供节点域名或源站 IP。", 12f, secondary))
             addView(label("• 默认只复制裸 IP，不改 hosts、路由或系统代理。DNS 同步必须在结果页二次确认。", 12f, secondary))
         }
@@ -290,15 +295,33 @@ class MainActivity : Activity() {
             else -> { importStatus.text = "已导入 ${importedIps.size} 个 IP · $importDescription"; importStatus.setTextColor(good) }
         }
     }
-    private fun applyManualIps(showToast: Boolean): Boolean {
+    private fun applyManualIpsAsync(showToast: Boolean, after: (Boolean) -> Unit = {}) {
         val raw = customIpsInput.text?.toString().orEmpty()
-        if (raw == appliedInput && importedIps.isNotEmpty()) return true
-        return try {
-            applyParsedIps(IpSources.parse(raw), "手动粘贴")
-            if (showToast) Toast.makeText(this, "已识别 ${importedIps.size} 个有效 IP", Toast.LENGTH_SHORT).show()
-            true
-        } catch (e: IpSourceException) {
-            refreshImportStatus(e.message ?: "IP 内容无效"); if (showToast) Toast.makeText(this, e.message ?: "IP 内容无效", Toast.LENGTH_LONG).show(); false
+        if (raw == appliedInput && importedIps.isNotEmpty()) {
+            after(true)
+            return
+        }
+        val generation = inputParseGeneration.incrementAndGet()
+        scope.launch(Dispatchers.Default) {
+            try {
+                val parsed = IpSources.parse(raw)
+                postUiIfAlive {
+                    if (inputParseGeneration.get() != generation || customIpsInput.text?.toString().orEmpty() != raw) {
+                        after(false)
+                        return@postUiIfAlive
+                    }
+                    applyParsedIps(parsed, "手动粘贴")
+                    if (showToast) Toast.makeText(this@MainActivity, "已识别 ${importedIps.size} 个有效 IP", Toast.LENGTH_SHORT).show()
+                    after(true)
+                }
+            } catch (e: IpSourceException) {
+                postUiIfAlive {
+                    if (inputParseGeneration.get() != generation) return@postUiIfAlive
+                    refreshImportStatus(e.message ?: "IP 内容无效")
+                    if (showToast) Toast.makeText(this@MainActivity, e.message ?: "IP 内容无效", Toast.LENGTH_LONG).show()
+                    after(false)
+                }
+            }
         }
     }
     private fun applyParsedIps(parsed: IpParseResult, origin: String) {
@@ -372,7 +395,15 @@ class MainActivity : Activity() {
         root.addView(secondaryButton("停止本次测试") { cancelActiveRun() }, lp(14))
     }
     private fun preflightAndStart() {
-        if (customIpsInput.text?.toString().orEmpty().isNotBlank() && !applyManualIps(true)) return
+        val raw = customIpsInput.text?.toString().orEmpty()
+        if (raw.isNotBlank() && (raw != appliedInput || importedIps.isEmpty())) {
+            applyManualIpsAsync(true) { applied -> if (applied) preflightWithAppliedInputs() }
+            return
+        }
+        preflightWithAppliedInputs()
+    }
+
+    private fun preflightWithAppliedInputs() {
         val info = NetEnv.detect(this)
         if (info.vpnActive) showConfirm("检测到 VPN。结果将代表 VPN 出口网络，是否继续？") { launchRun(info) } else launchRun(info)
     }
@@ -494,11 +525,16 @@ class MainActivity : Activity() {
         val argoPort = parsedArgoPort ?: 443
         val families = when (protocol) { "IPv4" -> listOf("IPv4"); "IPv6" -> listOf("IPv6"); else -> listOf("IPv4", "IPv6") }.filterNot { it == "IPv6" && !network.ipv6Available }
         if (families.isEmpty()) { Toast.makeText(this, "所选协议族没有可用链路", Toast.LENGTH_LONG).show(); return }
-        val params = when (strategy) {
+        val baseParams = when (strategy) {
             "亚洲狩猎" -> IpPipeline.ASIA_HUNT
             "最大带宽" -> IpPipeline.MAX_BANDWIDTH
             else -> IpPipeline.BALANCED
         }
+        val params = baseParams.copy(
+            preConcurrency = if (network.networkType == "Mobile") {
+                minOf(16, baseParams.preConcurrency)
+            } else baseParams.preConcurrency
+        )
         val lease = beginRunLease()
         logQueue.clear(); logLines.clear(); logs.text = ""; progress.progress = 0; percent.text = "0%"; switchTo(run, "run")
         val networkChanged = AtomicBoolean(false)
@@ -514,6 +550,7 @@ class MainActivity : Activity() {
             try {
                 appendRunLog(lease, "=== $strategy / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
                 appendRunLog(lease, "主模式：公开测速主机 ${ProbeEngine.SPEED_HOST}:443 · 目标 ${expectedMbps} Mbps")
+                appendRunLog(lease, "TCP 三次快筛并发：${params.preConcurrency}（${network.networkType} 自适应）")
                 if (advancedValidation) appendRunLog(lease, "高级复核：$host:$argoPort；WS Path=${wsPath.ifBlank { "未填写" }}")
                 setStage(lease, "刷新 Cloudflare 网段"); CfRanges.refresh()
                 if (!isCurrentRun(lease)) return@launch
@@ -594,9 +631,16 @@ class MainActivity : Activity() {
         if (networkChanged.get()) cancelRunIfCurrent(lease)
     }
     private fun selectCandidates(snapshot: AuthorizedHostSnapshot, family: String, lease: RunLease): List<IpPipeline.Candidate> =
-        CandidatePool.build(snapshot, importedIps, family, includeOfficialSamples = true, snapshotSource = "测速域名DNS").also {
+        CandidatePool.build(
+            snapshot,
+            importedIps,
+            family,
+            includeOfficialSamples = true,
+            snapshotSource = "测速域名DNS",
+            sampleSeed = lease.sampleSeed xor (family.hashCode().toLong() shl 32)
+        ).also {
             appendRunLog(lease, "$family 候选 ${it.candidates.size}；导入有效 ${it.acceptedImported}/${it.importedCount}" +
-                "；拒绝非 CF ${it.ignoredOutsideCloudflare}；跨协议族 ${it.ignoredWrongFamily}${if (it.importedSampled) "；长列表已分散抽样" else ""}")
+                "；拒绝私网/保留/无效 ${it.ignoredUnsafeOrNonPublic}；跨协议族 ${it.ignoredWrongFamily}${if (it.importedSampled) "；长列表已分散抽样" else ""}")
         }.candidates.map { IpPipeline.Candidate(it.ip, it.source) }
     private fun appendRunLog(lease: RunLease, value: String) { if (isCurrentRun(lease)) appendLog(value) }
     private fun appendLog(value: String) {

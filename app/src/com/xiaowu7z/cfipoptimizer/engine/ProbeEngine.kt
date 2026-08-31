@@ -1,19 +1,26 @@
 package com.xiaowu7z.cfipoptimizer.engine
 
+import com.xiaowu7z.cfipoptimizer.IpSources
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okio.Buffer
+import java.io.InterruptedIOException
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.Socket
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Phase 1.2 核心探测引擎。
@@ -24,7 +31,7 @@ import java.util.concurrent.TimeUnit
  * 3. HTTP/1.1 强制。
  * 4. 分族：输入必须是 IP literal；remote 家族与 targetIp 等价判断全部基于 connectStart 捕获的
  *    真实 InetSocketAddress（InetAddress 字节比较），禁止字符串比较、禁止按 targetIp 推断。
- * 5. 完整下载 ≥ 目标字节 80% 才成功。
+ * 5. 最终测速只接受 2xx、有效 CF-RAY，以及足量且足时（或完整大样本）的响应。
  * 6. 取消：所有网络阶段（下载 + POP trace）的 Call 都绑定协程取消——停止按钮立即中断。
  * 7. 三口径吞吐：PayloadMbps（纯 body）/ CompleteTransferMbps（connectStart→bodyEnd）/
  *    CallTotalMbps（callStart→bodyEnd，含 DNS）。与 PS v3.0 的对照口径由真机 A/B 后确定，不预先声称一致。
@@ -32,6 +39,70 @@ import java.util.concurrent.TimeUnit
 object ProbeEngine {
 
     const val SPEED_HOST = "speed.cloudflare.com"
+
+    /**
+     * A cancellation-aware registry closes a race where a second trace/WS call
+     * is created immediately after the cancellation callback took its snapshot.
+     * Calls registered after cancellation are cancelled synchronously.
+     */
+    private class ActiveCallRegistry {
+        private val cancelled = AtomicBoolean(false)
+        private val calls = CopyOnWriteArraySet<okhttp3.Call>()
+
+        fun register(call: okhttp3.Call): Boolean {
+            if (cancelled.get()) {
+                call.cancel()
+                return false
+            }
+            calls.add(call)
+            if (cancelled.get()) {
+                calls.remove(call)
+                call.cancel()
+                return false
+            }
+            return true
+        }
+
+        fun unregister(call: okhttp3.Call) {
+            calls.remove(call)
+        }
+
+        fun cancelAll(): Int {
+            cancelled.set(true)
+            val snapshot = calls.toList()
+            snapshot.forEach { it.cancel() }
+            return snapshot.size
+        }
+    }
+
+    /** Same cancellation-race protection for the direct TCP shortlist stage. */
+    private class ActiveSocketRegistry {
+        private val cancelled = AtomicBoolean(false)
+        private val sockets = CopyOnWriteArraySet<Socket>()
+
+        fun register(socket: Socket): Boolean {
+            if (cancelled.get()) {
+                try { socket.close() } catch (_: Exception) {}
+                return false
+            }
+            sockets.add(socket)
+            if (cancelled.get()) {
+                sockets.remove(socket)
+                try { socket.close() } catch (_: Exception) {}
+                return false
+            }
+            return true
+        }
+
+        fun unregister(socket: Socket) {
+            sockets.remove(socket)
+        }
+
+        fun cancelAll() {
+            cancelled.set(true)
+            sockets.forEach { try { it.close() } catch (_: Exception) {} }
+        }
+    }
 
     data class ProbeResult(
         val ok: Boolean,
@@ -132,6 +203,139 @@ object ProbeEngine {
         return maxOf(floor, requested).coerceAtMost(256_000_000L)
     }
 
+    data class SpeedRates(
+        val payloadMbps: Double,
+        val completeTransferMbps: Double,
+        val callTotalMbps: Double
+    )
+
+    data class SpeedSampleAssessment(val ok: Boolean, val error: String = "")
+
+    fun acceptedTcpAverageMs(rtts: List<Double>, requiredAttempts: Int = 3): Double? =
+        rtts.takeIf {
+            requiredAttempts > 0 && it.size == requiredAttempts &&
+                it.all { value -> value > 0.0 && value.isFinite() }
+        }?.average()
+
+    fun calculateSpeedRates(
+        downloadedBytes: Long,
+        bodyMs: Double,
+        completeMs: Double,
+        callTotalMs: Double
+    ): SpeedRates {
+        fun rate(durationMs: Double): Double =
+            if (downloadedBytes > 0L && durationMs > 0.0 && durationMs.isFinite()) {
+                (downloadedBytes * 8 / 1_000_000.0) / (durationMs / 1_000.0)
+            } else 0.0
+        return SpeedRates(rate(bodyMs), rate(completeMs), rate(callTotalMs))
+    }
+
+    /** Pure acceptance policy, kept public for deterministic regression tests. */
+    fun assessSpeedSample(
+        httpCode: Int,
+        handshakeOk: Boolean,
+        remoteMatches: Boolean,
+        rayColo: String,
+        downloadedBytes: Long,
+        requestedBytes: Long,
+        bodyMs: Double,
+        sampleMillis: Long
+    ): SpeedSampleAssessment {
+        val minimumWindowMs = minOf(800.0, sampleMillis.toDouble())
+        val fullExpectedSample = requestedBytes >= 4_000_000L && downloadedBytes >= requestedBytes
+        // A complete expected body of at least 4 MB is itself strong
+        // target-bandwidth evidence. Requiring a minimum duration here would
+        // incorrectly reject genuine high-throughput links that finish the
+        // complete requested body well before one second. Tiny cached/error
+        // responses cannot use this exception.
+        val safeCompleteException = fullExpectedSample
+        return when {
+            httpCode !in 200..299 -> SpeedSampleAssessment(false, "HTTP $httpCode")
+            !handshakeOk -> SpeedSampleAssessment(false, "TLS 握手失败")
+            !remoteMatches -> SpeedSampleAssessment(false, "实际远端与候选 IP 不一致，结果已拒绝")
+            rayColo.isEmpty() -> SpeedSampleAssessment(false, "响应缺少有效 CF-RAY，结果已拒绝")
+            downloadedBytes < 128L * 1024L -> SpeedSampleAssessment(false, "下载样本不足：$downloadedBytes B")
+            bodyMs < minimumWindowMs && !safeCompleteException -> SpeedSampleAssessment(
+                false,
+                "下载窗口过短：${"%.0f".format(Locale.ROOT, bodyMs)} ms"
+            )
+            else -> SpeedSampleAssessment(true)
+        }
+    }
+
+    /**
+     * Three direct TCP-connect RTTs for a bounded safe-public candidate. This is only a cheap shortlist stage:
+     * it never makes an IP copyable and never replaces the strict TLS download
+     * validation below.
+     */
+    suspend fun probeTcpRtt(
+        targetIp: String,
+        attempts: Int = 3,
+        timeoutMillis: Int = 1_000,
+        targetPort: Int = 443,
+        log: (String) -> Unit = {}
+    ): ProbeResult {
+        val targetAddress = verifiedPublicTarget(targetIp)
+            ?: return ProbeResult(ok = false, error = "候选必须是安全公网 IP", targetIp = targetIp)
+        if (targetPort !in 1..65_535) return ProbeResult(ok = false, error = "端口无效", targetIp = targetIp)
+        val boundedAttempts = attempts.coerceIn(1, 5)
+        val boundedTimeout = timeoutMillis.coerceIn(250, 2_000)
+        val activeSockets = ActiveSocketRegistry()
+        val rtts = ArrayList<Double>(boundedAttempts)
+        var result: ProbeResult? = null
+
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+            cont.invokeOnCancellation {
+                activeSockets.cancelAll()
+                log(">>> TCP 快筛已取消")
+            }
+            try {
+                for (round in 0 until boundedAttempts) {
+                    if (!cont.isActive) break
+                    val socket = Socket()
+                    if (!activeSockets.register(socket)) break
+                    val started = System.nanoTime()
+                    try {
+                        socket.connect(InetSocketAddress(targetAddress, targetPort), boundedTimeout)
+                        if (!socket.isConnected) throw java.net.ConnectException("未建立连接")
+                        rtts.add((System.nanoTime() - started) / 1_000_000.0)
+                    } finally {
+                        activeSockets.unregister(socket)
+                        try { socket.close() } catch (_: Exception) {}
+                    }
+                }
+                val average = acceptedTcpAverageMs(rtts, boundedAttempts)
+                if (average != null) {
+                    result = ProbeResult(
+                        ok = true,
+                        family = if (targetAddress is Inet6Address) "IPv6" else "IPv4",
+                        targetIp = targetIp,
+                        actualRemoteAddress = targetAddress.hostAddress.orEmpty(),
+                        targetMatchesRemote = true,
+                        remoteIsIpv6 = targetAddress is Inet6Address,
+                        tcpMs = average,
+                        ttfbMs = average,
+                        totalMs = rtts.sum(),
+                        callTotalMs = rtts.sum(),
+                        events = rtts.joinToString(prefix = "tcp-rtt=", separator = ",") { "%.1f".format(Locale.ROOT, it) }
+                    )
+                } else {
+                    result = ProbeResult(ok = false, error = "TCP 快筛已取消", targetIp = targetIp)
+                }
+            } catch (e: Exception) {
+                result = ProbeResult(
+                    ok = false,
+                    error = if (!cont.isActive) "已取消" else "TCP ${rtts.size + 1}/$boundedAttempts 失败：${e.javaClass.simpleName}",
+                    targetIp = targetIp
+                )
+            } finally {
+                activeSockets.cancelAll()
+            }
+            cont.resumeWith(Result.success(Unit))
+        }
+        return result ?: ProbeResult(ok = false, error = "TCP 快筛无结果", targetIp = targetIp)
+    }
+
     /** 从 CF-RAY 的末段读取实际 Cloudflare POP，例如 xxx-HKG -> HKG。 */
     fun edgeColo(cfRay: String?): String {
         val suffix = cfRay.orEmpty().substringAfterLast('-', "").trim().uppercase(Locale.ROOT)
@@ -152,8 +356,8 @@ object ProbeEngine {
         targetPort: Int = 443,
         log: (String) -> Unit = {}
     ): ProbeResult {
-        val targetAddress = verifiedCloudflareTarget(targetIp)
-            ?: return ProbeResult(ok = false, error = "候选必须是 Cloudflare 官方网段内的 IP", targetIp = targetIp)
+        val targetAddress = verifiedPublicTarget(targetIp)
+            ?: return ProbeResult(ok = false, error = "候选必须是安全公网 IP", targetIp = targetIp)
         val host = testHost.trim().lowercase(Locale.ROOT)
         if (host.isEmpty() || host.any { it.isWhitespace() }) {
             return ProbeResult(ok = false, error = "测试主机无效", targetIp = targetIp)
@@ -163,14 +367,15 @@ object ProbeEngine {
         }
 
         val boundedBytes = requestedBytes.coerceIn(32_768L, 256_000_000L)
-        val boundedWindow = sampleMillis.coerceIn(250L, 3_000L)
+        val boundedWindow = sampleMillis.coerceIn(800L, 3_000L)
         val events = StringBuilder()
         var timing: ProbeTimingListener.Timings? = null
         var actualRemote: InetAddress? = null
         val client = newColdClient(
             host, targetIp, timeoutSec, events,
             { timing = it },
-            { actualRemote = it }
+            { actualRemote = it },
+            callTimeoutSec = timeoutSec
         )
         val request = Request.Builder()
             .url("https://${httpsAuthority(host, targetPort)}/__down?bytes=$boundedBytes")
@@ -189,19 +394,31 @@ object ProbeEngine {
                 call.execute().use { response ->
                     var downloaded = 0L
                     val bodyStartNs = System.nanoTime()
+                    val bodyDeadlineNs = bodyStartNs + boundedWindow * 1_000_000L
                     val body = response.body
                     if (body != null) {
-                        body.byteStream().use { input ->
-                            val buffer = ByteArray(64 * 1024)
+                        val source = body.source()
+                        val buffer = Buffer()
+                        source.timeout().deadlineNanoTime(bodyDeadlineNs)
+                        try {
                             while (downloaded < boundedBytes) {
-                                val elapsedMs = (System.nanoTime() - bodyStartNs) / 1_000_000L
-                                if (elapsedMs >= boundedWindow && downloaded >= 32_768L) break
-                                val wanted = minOf(buffer.size.toLong(), boundedBytes - downloaded).toInt()
-                                if (wanted <= 0) break
-                                val count = input.read(buffer, 0, wanted)
-                                if (count < 0) break
+                                if (System.nanoTime() >= bodyDeadlineNs) break
+                                val wanted = minOf(256L * 1024L, boundedBytes - downloaded)
+                                if (wanted <= 0L) break
+                                val count = source.read(buffer, wanted)
+                                if (count < 0L) break
                                 downloaded += count
+                                buffer.clear()
                             }
+                        } catch (e: InterruptedIOException) {
+                            // The per-body deadline is the intended end of a
+                            // fixed window. A timeout substantially before it
+                            // remains a real transport failure.
+                            if (System.nanoTime() + 50_000_000L < bodyDeadlineNs) throw e
+                            events.append("speed window deadline\n")
+                        } finally {
+                            try { source.timeout().clearDeadline() } catch (_: Exception) {}
+                            try { source.close() } catch (_: Exception) {}
                         }
                     }
                     val bodyEndNs = System.nanoTime()
@@ -211,21 +428,27 @@ object ProbeEngine {
                     val remoteMatches = addressesEqual(targetAddress, remote)
                     val rayColo = edgeColo(response.header("CF-RAY"))
                     val handshakeOk = response.handshake != null
-                    val enough = downloaded >= 32_768L
-                    val ok = response.code in 200..399 && handshakeOk && remoteMatches &&
-                        rayColo.isNotEmpty() && enough
-                    val speed = if (ok) (downloaded * 8 / 1_000_000.0) / (bodyMs / 1_000.0) else 0.0
+                    val assessment = assessSpeedSample(
+                        httpCode = response.code,
+                        handshakeOk = handshakeOk,
+                        remoteMatches = remoteMatches,
+                        rayColo = rayColo,
+                        downloadedBytes = downloaded,
+                        requestedBytes = boundedBytes,
+                        bodyMs = bodyMs,
+                        sampleMillis = boundedWindow
+                    )
+                    val completeMs = if (t.connectStartNs > 0L) {
+                        ((bodyEndNs - t.connectStartNs) / 1_000_000.0).coerceAtLeast(bodyMs)
+                    } else bodyMs
+                    val callTotalMs = if (t.callStartNs > 0L) {
+                        ((bodyEndNs - t.callStartNs) / 1_000_000.0).coerceAtLeast(completeMs)
+                    } else completeMs
+                    val rates = calculateSpeedRates(downloaded, bodyMs, completeMs, callTotalMs)
                     val remoteIsV6 = remote is Inet6Address
                     result = ProbeResult(
-                        ok = ok,
-                        error = when {
-                            response.code !in 200..399 -> "HTTP ${response.code}"
-                            !handshakeOk -> "TLS 握手失败"
-                            !remoteMatches -> "实际远端与候选 IP 不一致，结果已拒绝"
-                            rayColo.isEmpty() -> "响应缺少有效 CF-RAY，结果已拒绝"
-                            !enough -> "下载样本不足：$downloaded B"
-                            else -> ""
-                        },
+                        ok = assessment.ok,
+                        error = assessment.error,
                         family = if (remote == null) "未知" else if (remoteIsV6) "IPv6" else "IPv4",
                         targetIp = targetIp,
                         actualRemoteAddress = remote?.hostAddress.orEmpty(),
@@ -241,13 +464,13 @@ object ProbeEngine {
                         tlsMs = t.tlsMs(),
                         ttfbMs = t.ttfbMs(),
                         bodyMs = bodyMs,
-                        totalMs = if (t.totalMs() > 0.0) t.totalMs() else bodyMs,
-                        callTotalMs = if (t.callTotalMs() > 0.0) t.callTotalMs() else bodyMs,
+                        totalMs = completeMs,
+                        callTotalMs = callTotalMs,
                         bytesDownloaded = downloaded,
                         bytesTarget = boundedBytes,
-                        payloadMbps = speed,
-                        completeTransferMbps = speed,
-                        callTotalMbps = speed,
+                        payloadMbps = if (assessment.ok) rates.payloadMbps else 0.0,
+                        completeTransferMbps = if (assessment.ok) rates.completeTransferMbps else 0.0,
+                        callTotalMbps = if (assessment.ok) rates.callTotalMbps else 0.0,
                         colo = rayColo,
                         events = events.toString()
                     )
@@ -286,8 +509,8 @@ object ProbeEngine {
         targetPort: Int = 443,
         log: (String) -> Unit
     ): ProbeResult {
-        if (verifiedCloudflareTarget(targetIp) == null) {
-            return ProbeResult(ok = false, error = "候选必须是 Cloudflare 官方网段内的 IP", targetIp = targetIp)
+        if (verifiedPublicTarget(targetIp) == null) {
+            return ProbeResult(ok = false, error = "候选必须是安全公网 IP", targetIp = targetIp)
         }
         val host = testHost.trim().lowercase(Locale.ROOT)
         if (host.isEmpty() || host.any { it.isWhitespace() }) {
@@ -306,16 +529,17 @@ object ProbeEngine {
         val call = client.newCall(req)
 
         // 取消绑定：所有活跃 Call 统一在此取消
-        val activeCalls = mutableListOf(call)
+        val activeCalls = ActiveCallRegistry().apply { register(call) }
 
         var result: ProbeResult? = null
         kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
             cont.invokeOnCancellation {
-                activeCalls.forEach { it.cancel() }
-                log(">>> 取消触发：${activeCalls.size} 个 Call 已 cancel()")
+                val cancelled = activeCalls.cancelAll()
+                log(">>> 取消触发：$cancelled 个 Call 已 cancel()")
             }
             try {
-                call.execute().use { resp ->
+                try {
+                    call.execute().use { resp ->
                     val bodyBytes = readBodyCounting(resp)
                     val t = timing ?: ProbeTimingListener.Timings()
                     // Phase 2.2.1：Pre/Micro/Baseline 不需要 POP。
@@ -325,8 +549,14 @@ object ProbeEngine {
                     val (traceColo, loc) = if (includeTrace && resp.isSuccessful && enoughBody) {
                         try {
                             val traceCall = newTraceCall(host, targetIp, targetPort, timeoutSec, events)
-                            activeCalls.add(traceCall)
-                            executeTrace(traceCall, events)
+                            if (!activeCalls.register(traceCall) || !cont.isActive) {
+                                traceCall.cancel()
+                                Pair("", "")
+                            } else try {
+                                executeTrace(traceCall, events)
+                            } finally {
+                                activeCalls.unregister(traceCall)
+                            }
                         } catch (e: Exception) {
                             events.append("trace fail: ${e.javaClass.simpleName}\n")
                             Pair("", "")
@@ -336,6 +566,9 @@ object ProbeEngine {
                     }
                     val colo = traceColo.ifBlank { rayColo }
                     result = buildResult(targetIp, host, t, resp, bodyBytes, bytes, colo, loc, events.toString())
+                    }
+                } finally {
+                    activeCalls.unregister(call)
                 }
                 cont.resumeWith(Result.success(Unit))
             } catch (e: java.io.IOException) {
@@ -372,10 +605,10 @@ object ProbeEngine {
         timeoutSec: Int = 8,
         log: (String) -> Unit = {}
     ): ArgoRouteResult {
-        val targetAddress = verifiedCloudflareTarget(targetIp)
+        val targetAddress = verifiedPublicTarget(targetIp)
             ?: return ArgoRouteResult(
                 ok = false,
-                error = "候选必须是 Cloudflare 官方网段内的 IP",
+                error = "候选必须是安全公网 IP",
                 targetIp = targetIp,
                 sni = argoHost,
                 hostHeader = argoHost,
@@ -396,21 +629,25 @@ object ProbeEngine {
                 .get()
                 .build()
         )
-        val activeCalls = mutableListOf(traceCall)
+        val activeCalls = ActiveCallRegistry().apply { register(traceCall) }
         var result: ArgoRouteResult? = null
         kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
             cont.invokeOnCancellation {
-                activeCalls.forEach { it.cancel() }
+                activeCalls.cancelAll()
                 log(">>> Argo 兼容验证已取消")
             }
             try {
                 var traceCode = 0
                 var traceHandshake = false
                 var traceText = ""
-                traceCall.execute().use { response ->
-                    traceCode = response.code
-                    traceHandshake = response.handshake != null
-                    traceText = readTextLimited(response, 64 * 1024)
+                try {
+                    traceCall.execute().use { response ->
+                        traceCode = response.code
+                        traceHandshake = response.handshake != null
+                        traceText = readTextLimited(response, 64 * 1024)
+                    }
+                } finally {
+                    activeCalls.unregister(traceCall)
                 }
                 val timing = traceTiming ?: ProbeTimingListener.Timings()
                 val remoteMatches = addressesEqual(targetAddress, timing.actualRemoteAddr)
@@ -446,8 +683,9 @@ object ProbeEngine {
                             .get()
                             .build()
                     )
-                    activeCalls.add(wsCall)
-                    try {
+                    if (!activeCalls.register(wsCall) || !cont.isActive) {
+                        wsCall.cancel()
+                    } else try {
                         wsCall.execute().use { response ->
                             wsCode = response.code
                             wsUpgrade = response.header("Upgrade")?.equals("websocket", ignoreCase = true) == true &&
@@ -458,6 +696,8 @@ object ProbeEngine {
                         }
                     } catch (e: Exception) {
                         events.append("ws path: ").append(e.javaClass.simpleName).append('\n')
+                    } finally {
+                        activeCalls.unregister(wsCall)
                     }
                 }
                 val wsRemoteMatches = wsPath.isEmpty() || addressesEqual(targetAddress, wsRemoteAddress)
@@ -522,7 +762,7 @@ object ProbeEngine {
         targetPort: Int = 443,
         log: (String) -> Unit
     ): Pair<String, String> {
-        if (verifiedCloudflareTarget(targetIp) == null) return Pair("", "")
+        if (verifiedPublicTarget(targetIp) == null) return Pair("", "")
         val events = StringBuilder()
         val host = testHost.trim().lowercase(Locale.ROOT)
         val call = newTraceCall(host, targetIp, targetPort, timeoutSec, events)
@@ -558,10 +798,12 @@ object ProbeEngine {
     private fun httpsAuthority(host: String, port: Int): String =
         if (port == 443) host else "$host:$port"
 
-    private fun verifiedCloudflareTarget(value: String): InetAddress? {
+    fun isSafePublicTarget(value: String): Boolean = verifiedPublicTarget(value) != null
+
+    private fun verifiedPublicTarget(value: String): InetAddress? {
         if (!isIpLiteral(value)) return null
         val address = try { InetAddress.getByName(value) } catch (_: Exception) { return null }
-        return address.takeIf { CfRanges.isCloudflare(it) }
+        return address.takeIf { IpSources.isPublicAddress(it) }
     }
 
     /** 执行 trace call 并解析 colo/loc。 */
@@ -590,7 +832,8 @@ object ProbeEngine {
         timeoutSec: Int,
         events: StringBuilder,
         onTimings: (ProbeTimingListener.Timings) -> Unit,
-        onConnect: (InetAddress?) -> Unit = {}
+        onConnect: (InetAddress?) -> Unit = {},
+        callTimeoutSec: Int = timeoutSec + 10
     ): OkHttpClient {
         val listener = ProbeTimingListener(
             onEvent = { events.append(it).append("\n") },
@@ -612,7 +855,7 @@ object ProbeEngine {
             .connectionPool(ConnectionPool(0, 1, TimeUnit.NANOSECONDS))
             .connectTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
             .readTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
-            .callTimeout((timeoutSec + 10).toLong(), TimeUnit.SECONDS)
+            .callTimeout(callTimeoutSec.coerceAtLeast(1).toLong(), TimeUnit.SECONDS)
             .retryOnConnectionFailure(false)
             .eventListener(listener)
             .build()

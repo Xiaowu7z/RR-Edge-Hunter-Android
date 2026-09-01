@@ -1,48 +1,48 @@
 package com.xiaowu7z.cfipoptimizer.engine
 
 import java.io.File
-import java.io.FileOutputStream
-import java.nio.charset.StandardCharsets
 import libXray.LibXray
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /** Native Xray gate equivalent to V2rayNG's real proxy delay test. */
 object XrayNodeGate {
+    private val nativeLock = Any()
+
     fun clearTemporaryConfigs(cacheDir: File) {
-        cacheDir.listFiles { file ->
-            file.isFile && file.name.startsWith("rr-xray-") && file.name.endsWith(".json")
-        }?.forEach { file -> file.delete() }
+        XrayTemporaryConfigStore.clearStale(cacheDir)
     }
 
-    @Synchronized
-    fun recognize(shareLink: String): XrayNodeProfile {
+    suspend fun recognize(shareLink: String): XrayNodeProfile {
+        val job = currentCoroutineContext()[Job]
+        job?.ensureActive()
         val route = NodeRouteParser.parse(shareLink)
-        val response = LibXray.invoke(XrayNodeConfig.convertRequest(shareLink))
-        return XrayNodeConfig.profileFromConvertResponse(route, response)
+        val response = invokeNative(XrayNodeConfig.convertRequest(shareLink), job)
+        job?.ensureActive()
+        return XrayNodeConfig.profileFromConvertResponse(route, response).also {
+            job?.ensureActive()
+        }
     }
 
     /**
      * Runs one full VMess/VLESS outbound request through [candidateIp]. Calls are
      * serialized because Xray-core owns process-global runtime state.
      */
-    @Synchronized
-    fun verify(cacheDir: File, profile: XrayNodeProfile, candidateIp: String): ProbeEngine.ArgoRouteResult {
+    suspend fun verify(cacheDir: File, profile: XrayNodeProfile, candidateIp: String): ProbeEngine.ArgoRouteResult {
+        val job = currentCoroutineContext()[Job]
         var temp: File? = null
         val route = profile.route
         return try {
+            job?.ensureActive()
             clearTemporaryConfigs(cacheDir)
             val config = XrayNodeConfig.configForCandidate(profile, candidateIp)
-            temp = File.createTempFile("rr-xray-", ".json", cacheDir).apply {
-                setReadable(false, false)
-                setWritable(false, false)
-                setReadable(true, true)
-                setWritable(true, true)
-            }
-            FileOutputStream(temp).use { output ->
-                output.write(config.toByteArray(StandardCharsets.UTF_8))
-                output.fd.sync()
-            }
-            val response = LibXray.invoke(XrayNodeConfig.pingBatchRequest(temp.absolutePath))
+            temp = XrayTemporaryConfigStore.create(cacheDir, config)
+            val response = invokeNative(XrayNodeConfig.pingBatchRequest(temp.absolutePath), job)
+            job?.ensureActive()
             val ping = XrayNodeConfig.pingResult(response)
+            job?.ensureActive()
             ProbeEngine.ArgoRouteResult(
                 ok = ping.ok,
                 error = ping.error,
@@ -56,6 +56,8 @@ object XrayNodeGate {
                 websocketAccepted = ping.ok,
                 ttfbMs = ping.delayMs.toDouble()
             )
+        } catch (error: CancellationException) {
+            throw error
         } catch (e: Exception) {
             ProbeEngine.ArgoRouteResult(
                 ok = false,
@@ -66,7 +68,13 @@ object XrayNodeGate {
                 wsPath = route.wsPath
             )
         } finally {
-            temp?.delete()
+            XrayTemporaryConfigStore.release(temp)
         }
+    }
+
+    /** libXray/Xray-core owns process-global runtime state; never overlap calls. */
+    private fun invokeNative(request: String, job: Job?): String = synchronized(nativeLock) {
+        job?.ensureActive()
+        LibXray.invoke(request)
     }
 }

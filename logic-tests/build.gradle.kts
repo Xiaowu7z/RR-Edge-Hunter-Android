@@ -23,6 +23,7 @@ kotlin {
                 "com/xiaowu7z/cfipoptimizer/engine/ReferenceScanner.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/NodeRouteTemplate.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/XrayNodeConfig.kt",
+                "com/xiaowu7z/cfipoptimizer/engine/XrayTemporaryConfigStore.kt",
                 "IpSourcesTest.kt",
                 "CfRangesCancellationTest.kt",
                 "AuthorizedHostTest.kt",
@@ -34,7 +35,8 @@ kotlin {
                 "CloudflareDnsTest.kt",
                 "ReferenceScannerTest.kt",
                 "NodeRouteParserTest.kt",
-                "XrayNodeConfigTest.kt"
+                "XrayNodeConfigTest.kt",
+                "XrayTemporaryConfigStoreTest.kt"
             )
         }
     }
@@ -144,6 +146,14 @@ val xrayNodeConfigTest by tasks.registering(JavaExec::class) {
     mainClass.set("XrayNodeConfigTestKt")
 }
 
+val xrayTemporaryConfigStoreTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies active native Xray configs survive stale-file cleanup and are erased on release."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("XrayTemporaryConfigStoreTestKt")
+}
+
 tasks.named("check") {
     dependsOn(
         ipSourcesTest,
@@ -157,6 +167,7 @@ tasks.named("check") {
         cloudflareDnsTest,
         referenceScannerTest,
         nodeRouteParserTest,
-        xrayNodeConfigTest
+        xrayNodeConfigTest,
+        xrayTemporaryConfigStoreTest
     )
 }

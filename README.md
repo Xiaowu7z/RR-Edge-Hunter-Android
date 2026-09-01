@@ -20,9 +20,9 @@
 
 ### Obtainium 自动更新
 
-[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D)
+[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20IP%20Optimizer%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Afalse%2C%5C%22versionDetection%5C%22%3Afalse%2C%5C%22releaseDateAsVersion%5C%22%3Atrue%2C%5C%22autoApkFilterByArch%5C%22%3Afalse%7D%22%7D)
 
-按钮与 RR Edge Atlas Android 使用同一种最简 Obtainium 官方深链，只携带包名、GitHub 来源、作者和应用名，避免嵌套高级配置造成 URI 解析错误。正式 Release 只保留一个 APK，因此打开后确认添加即可，不需要用户选择文件或填写筛选规则。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
+按钮使用 Obtainium 官方完整配置深链，并保持整个 URI 载荷为纯 ASCII，避开旧版 Obtainium 对中文 URI 重复解码导致的错误；同时已固定唯一 APK、关闭架构筛选，并按 Release 日期识别更新。即使应用版本按要求保持 1.0.0，重发正式 Release 后仍可发现新包。打开后确认添加即可，不需要用户选择文件。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android

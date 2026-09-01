@@ -166,6 +166,10 @@ object ReferenceScanner {
                 val route = if (routeValidator != null) {
                     onStage(Stage("V2rayNG 同口径节点复核", 0, 1, rtt.candidate.ip))
                     routeValidator(rtt.candidate.ip).also {
+                        // Native Xray calls are blocking. A Stop/Back request
+                        // can arrive while the call is in progress, so never
+                        // accept its result before observing cancellation.
+                        coroutineContext.ensureActive()
                         onStage(Stage("V2rayNG 同口径节点复核", 1, 1, rtt.candidate.ip))
                     }
                 } else null

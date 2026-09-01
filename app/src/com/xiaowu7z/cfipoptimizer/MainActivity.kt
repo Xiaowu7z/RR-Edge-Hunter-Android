@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -47,7 +48,10 @@ import java.util.concurrent.atomic.AtomicLong
  * then proves the winner against an existing VMess/VLESS Argo node route.
  */
 class MainActivity : Activity() {
-    companion object { private const val REQUEST_OPEN_IP_FILE = 711 }
+    companion object {
+        private const val REQUEST_OPEN_IP_FILE = 711
+        private const val MAX_NODE_LINK_BYTES = 32 * 1024
+    }
 
     private class RunLease(
         val generation: Long,
@@ -111,6 +115,8 @@ class MainActivity : Activity() {
     private val logHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val flushing = AtomicBoolean(false)
     private val inputParseGeneration = AtomicLong(0L)
+    private val nodeRecognitionGeneration = AtomicLong(0L)
+    private var nodeRecognitionJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -384,34 +390,74 @@ class MainActivity : Activity() {
         root.addView(secondaryButton("停止本次测试") { cancelActiveRun() }, lp(14))
     }
 
-    private fun acceptNodeTemplate(showToast: Boolean): Boolean {
+    private fun acceptNodeTemplate(showToast: Boolean, after: (Boolean) -> Unit = {}) {
         val raw = nodeLinkInput.text?.toString().orEmpty().trim()
         if (raw.isBlank()) {
-            if (nodeProfile != null) return true
+            if (nodeProfile != null) {
+                after(true)
+                return
+            }
             if (showToast) Toast.makeText(this, "请先粘贴一个当前在 V2rayNG 能用的 VMess/VLESS Argo 节点", Toast.LENGTH_LONG).show()
-            return false
+            after(false)
+            return
         }
-        return try {
-            val parsed = XrayNodeGate.recognize(raw)
-            nodeProfile = parsed
-            // Do not leave credentials in the view hierarchy after conversion.
-            nodeLinkInput.text?.clear()
-            nodeSummary.text = "已识别：${parsed.route.safeSummary}；完整配置仅在当前页面内存中"
-            nodeSummary.setTextColor(good)
-            refreshStatus()
-            if (showToast) Toast.makeText(this, "节点已识别，将执行 V2rayNG 同口径完整出站测试", Toast.LENGTH_SHORT).show()
-            true
-        } catch (e: Exception) {
+        if (raw.length > MAX_NODE_LINK_BYTES || raw.toByteArray(Charsets.UTF_8).size > MAX_NODE_LINK_BYTES) {
             nodeProfile = null
-            nodeSummary.text = e.message ?: "节点链接无法识别"
+            nodeSummary.text = "节点分享链接不能超过 32 KiB"
             nodeSummary.setTextColor(bad)
             if (showToast) Toast.makeText(this, nodeSummary.text, Toast.LENGTH_LONG).show()
-            false
+            after(false)
+            return
         }
+        val generation = nodeRecognitionGeneration.incrementAndGet()
+        nodeRecognitionJob?.cancel()
+        nodeProfile = null
+        nodeSummary.text = "正在用 Xray 识别完整节点参数…"
+        nodeSummary.setTextColor(secondary)
+        val job = scope.launch {
+            try {
+                val parsed = XrayNodeGate.recognize(raw)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                postUiIfAlive {
+                    if (nodeRecognitionGeneration.get() != generation) return@postUiIfAlive
+                    if (nodeLinkInput.text?.toString().orEmpty().trim() != raw) {
+                        nodeSummary.text = "输入内容已改变，请重新点击识别"
+                        nodeSummary.setTextColor(warn)
+                        after(false)
+                        return@postUiIfAlive
+                    }
+                    nodeProfile = parsed
+                    // Do not leave credentials in the view hierarchy after conversion.
+                    nodeLinkInput.text?.clear()
+                    nodeSummary.text = "已识别：${parsed.route.safeSummary}；完整配置仅在当前页面内存中"
+                    nodeSummary.setTextColor(good)
+                    refreshStatus()
+                    if (showToast) Toast.makeText(this@MainActivity, "节点已识别，将执行 V2rayNG 同口径完整出站测试", Toast.LENGTH_SHORT).show()
+                    after(true)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                postUiIfAlive {
+                    if (nodeRecognitionGeneration.get() != generation) return@postUiIfAlive
+                    nodeProfile = null
+                    nodeSummary.text = e.message ?: "节点链接无法识别"
+                    nodeSummary.setTextColor(bad)
+                    if (showToast) Toast.makeText(this@MainActivity, nodeSummary.text, Toast.LENGTH_LONG).show()
+                    after(false)
+                }
+            }
+        }
+        nodeRecognitionJob = job
     }
 
     private fun preflightAndStart() {
-        if (!acceptNodeTemplate(true)) return
+        acceptNodeTemplate(true) { accepted ->
+            if (accepted) continuePreflightAfterNode()
+        }
+    }
+
+    private fun continuePreflightAfterNode() {
         val raw = customIpsInput.text?.toString().orEmpty()
         if (raw.isNotBlank() && (raw != appliedInput || importedIps.isEmpty())) {
             applyManualIpsAsync(true) { applied -> if (applied) preflightWithAppliedInputs() }
@@ -1029,6 +1075,9 @@ class MainActivity : Activity() {
         }
         watcher?.invoke()
         logHandler.removeCallbacksAndMessages(null)
+        nodeRecognitionGeneration.incrementAndGet()
+        nodeRecognitionJob?.cancel()
+        nodeRecognitionJob = null
         nodeProfile = null
         XrayNodeGate.clearTemporaryConfigs(cacheDir)
         scope.cancel()

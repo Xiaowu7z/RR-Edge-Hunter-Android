@@ -13,6 +13,7 @@ object XrayNodeGate {
         }?.forEach { file -> file.delete() }
     }
 
+    @Synchronized
     fun recognize(shareLink: String): XrayNodeProfile {
         val route = NodeRouteParser.parse(shareLink)
         val response = LibXray.invoke(XrayNodeConfig.convertRequest(shareLink))

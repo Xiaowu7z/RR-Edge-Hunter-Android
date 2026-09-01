@@ -560,6 +560,13 @@ class MainActivity : Activity() {
                     AuthorizedHost.snapshot(host) { appendRunLog(lease, it) }
                 }
                 if (!isCurrentRun(lease)) return@launch
+                val argoValidator: (suspend (String) -> ProbeEngine.ArgoRouteResult)? = if (advancedValidation) {
+                    { ip ->
+                        ProbeEngine.probeArgoRoute(ip, host, wsPath, argoPort, 8) {
+                            appendRunLog(lease, "  $it")
+                        }
+                    }
+                } else null
                 val all = LinkedHashMap<String, List<IpMetric>>(); val asia = LinkedHashMap<String, List<IpMetric>>(); val popCounts = LinkedHashMap<String, Map<String, Int>>()
                 var invalid = false
                 families.forEachIndexed { idx, family ->
@@ -571,9 +578,7 @@ class MainActivity : Activity() {
                         expectedMbps = expectedMbps,
                         useTls = tlsMode,
                         networkInvalid = { networkChanged.get() },
-                        routeValidator = if (advancedValidation) ({ ip: String ->
-                            ProbeEngine.probeArgoRoute(ip, host, wsPath, argoPort, 8) { appendRunLog(lease, "  $it") }
-                        }) else null,
+                        routeValidator = argoValidator,
                         onStage = { state ->
                             val span = 92 / families.size
                             val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total

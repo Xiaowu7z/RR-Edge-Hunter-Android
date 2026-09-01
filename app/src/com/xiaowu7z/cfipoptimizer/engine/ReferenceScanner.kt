@@ -256,7 +256,8 @@ object ReferenceScanner {
             val connectedNs = System.nanoTime()
             require(ProbeEngine.addressesEqual(target, raw.inetAddress)) { "实际远端不一致" }
             if (useTls) {
-                val ssl = SSLSocketFactory.getDefault().createSocket(raw, "cloudflare.com", port, true) as SSLSocket
+                val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                val ssl = sslFactory.createSocket(raw, "cloudflare.com", port, true) as SSLSocket
                 val parameters = ssl.sslParameters
                 parameters.endpointIdentificationAlgorithm = "HTTPS"
                 ssl.sslParameters = parameters

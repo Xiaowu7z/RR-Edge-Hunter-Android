@@ -62,7 +62,7 @@ object MaintainedPool {
         val dir = cacheDir(root)
         val cached = readCache(dir)
         val fresh = cached != null && System.currentTimeMillis() - File(dir, "updated-at").lastModified() <= CACHE_MAX_AGE_MS
-        if (fresh && !forceRefresh) return@withContext cached
+        if (fresh && !forceRefresh) return@withContext requireNotNull(cached)
         try {
             coroutineContext.ensureActive()
             val speedText = fetch(SPEED_URL, MAX_SMALL_BYTES)

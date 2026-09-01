@@ -1,20 +1,34 @@
 # RR Edge Hunter Android · CF 优选IP
 
-> Android 独立版 · [电脑版](https://github.com/Xiaowu7z/RR-Edge-Hunter)
+> 无需节点、无需订阅，直接在 Android 手机上优选 Cloudflare IPv4/IPv6。
+>
+> [下载 Android 版](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk) · [查看 Windows 电脑版](https://github.com/Xiaowu7z/RR-Edge-Hunter)
 
-Android 测速完整调用你提供的参考 APK 原生 Go 引擎。RR 不再自己生成候选、不做 RTT、CF-RAY、下载测速、速度计算、排名或换轮，也不需要节点链接。
+本项目使用参考 App 的原生 Go 引擎完成候选生成、延迟检测、下载测速、速度计算、排名和换轮。用户不需要提供 VMess/VLESS 节点、订阅链接、UUID 或其他代理信息。
 
-RR 只保留界面，并额外提供一个用户手动功能：测试完成后，可点击按钮把参考引擎返回的唯一 IPv4/IPv6 写入 Cloudflare A/AAAA 灰云记录。Android 不会自动修改 DNS。
+## 主要功能
 
-没有 Xray、VMess/VLESS、运营商模式、自定义 IP 池或 RR 自写测速算法。
+- 支持 IPv4、IPv6；
+- 支持非 TLS 80 与 TLS 443；
+- 可自行设置期望带宽，未达标时由原版引擎继续换轮；
+- 显示测速进度、最终 IP、实测带宽、最高速度、延迟、数据中心和耗时；
+- 支持复制结果、查看本机历史和手动更新原版数据；
+- 测试完成后，可由用户手动把本轮唯一 IP 写入 Cloudflare A/AAAA 灰云记录。
 
-## 安装
+Android 版不会自动修改 DNS，也不会同时添加多个 IP。需要定时自动测试和每轮自动解析时，请使用 [Windows 电脑版](https://github.com/Xiaowu7z/RR-Edge-Hunter)。
+
+## 下载与使用
 
 当前版本：**1.0.0**，包名：`com.xiaowu7z.cfipoptimizer`。
 
 [下载最新版 CF-IP-Optimizer.apk](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk)
 
 APK 仅包含参考 App 提供的 `arm64-v8a` 原生引擎，适用于现代 64 位 Android 设备。
+
+1. 下载并安装 APK；
+2. 选择 IPv4/IPv6、TLS/非 TLS，并填写期望带宽；
+3. 点击开始，等待原版引擎返回一个达标 IP；
+4. 复制结果自行使用，或从结果页手动添加到 Cloudflare DNS。
 
 ## 默认值
 
@@ -26,9 +40,11 @@ APK 仅包含参考 App 提供的 `arm64-v8a` 原生引擎，适用于现代 64 
 
 这些默认值与提供的参考 APK 一致。引擎未找到达标 IP 时会继续换轮；目标越高，耗时和流量越大，可随时停止。
 
-## 使用的参考 App 代码
+## 测速原理与参考代码
 
-提交到仓库的以下部分来自你提供的 APK：
+Android 测速完整调用参考 APK 的原生 Go 引擎。RR 没有重新实现候选生成、RTT、CF-RAY、下载测速、速度计算、排名或换轮，也没有加入 Xray、VMess/VLESS、运营商模式或自定义 IP 池。
+
+提交到仓库的以下部分来自参考 APK：
 
 - 原生引擎：`app/src/main/jniLibs/arm64-v8a/libgojni.so`
 - gomobile JNI 绑定：`app/src/go/` 与 `app/src/com/cf/ip/better/`
@@ -53,9 +69,9 @@ CI 会校验原生库哈希，并在 APK 构建后再次解包验证；同时确
 
 最终 JSON 字段 `ip`、`bandwidth`、`realBandwidth`、`maxSpeed`、`latencyMs`、`dataCenter`、`elapsed` 也按参考 App 原格式读取。
 
-## Cloudflare DNS
+## 手动添加到 Cloudflare DNS
 
-结果页提供“手动添加到 Cloudflare DNS”按钮。只有用户点击、查看预览并再次确认后，才会把本轮唯一 IP 写入指定域名；普通测速和复制 IP 不需要任何 Cloudflare 凭据。
+结果页提供“手动添加到 Cloudflare DNS”按钮。只有用户点击、查看预览并再次确认后，才会把本轮唯一 IP 写入指定域名；普通测速、查看结果和复制 IP 都不需要 Cloudflare 凭据。
 
 - IPv4 写 A，IPv6 写 AAAA；
 - 强制 DNS-only（灰云）与自动 TTL；

@@ -43,6 +43,14 @@ fun main() {
     check("未完成且不足800ms的样本被拒绝", !assess(bytes = 2_000_000L, bodyMs = 799.0).ok)
     check("达到约800ms的真实窗口被接受", assess(bytes = 2_000_000L, bodyMs = 850.0).ok)
     check(
+        "5秒复测不足4秒且未完整下载时被拒绝",
+        !ProbeEngine.assessSpeedSample(200, true, true, "HKG", 20_000_000L, 75_000_000L, 3_999.0, 5_000L).ok
+    )
+    check(
+        "5秒复测达到八成窗口时被接受",
+        ProbeEngine.assessSpeedSample(200, true, true, "HKG", 20_000_000L, 75_000_000L, 4_100.0, 5_000L).ok
+    )
+    check(
         "完整预期大样本允许安全的提前完成例外",
         assess(bytes = 4_000_000L, requested = 4_000_000L, bodyMs = 300.0).ok
     )

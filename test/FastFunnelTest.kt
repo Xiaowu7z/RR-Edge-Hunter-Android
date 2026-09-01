@@ -78,6 +78,21 @@ fun main() = runBlocking {
     check("复测失败不占finalLimit并向下补位", outcome.confirmed == fastest.drop(1), outcome.toString())
     check("补位阶段最坏请求数不低估", outcome.requestUpperBound == 3 && outcome.requestsMade == 3, outcome.toString())
 
+    val emptyFullSamples = linkedMapOf<IpPipeline.Candidate, MutableList<ProbeEngine.ProbeResult>>()
+    val fiveSecondOutcome = IpPipeline.confirmFastestCandidates(
+        orderedCandidates = fastest.take(1),
+        samples = emptyFullSamples,
+        finalLimit = 1,
+        fullRounds = 2,
+        sample = { probe(true, 150.0) }
+    )
+    check(
+        "1秒快筛不混入最终样本且另做两轮复测",
+        fiveSecondOutcome.confirmed == fastest.take(1) && fiveSecondOutcome.requestsMade == 2 &&
+            emptyFullSamples.getValue(fastest.first()).size == 2,
+        fiveSecondOutcome.toString()
+    )
+
     check(
         "达标候选二测失败不能提前结束",
         !IpPipeline.hasConfirmedTarget(listOf(probe(true, 150.0), probe(false, 0.0)), 100)
@@ -87,7 +102,7 @@ fun main() = runBlocking {
         !IpPipeline.hasConfirmedTarget(listOf(probe(true, 150.0), probe(true, 90.0)), 100)
     )
     check(
-        "连续两次达标才可提前结束",
+        "两轮5秒复测达标才可提前结束",
         IpPipeline.hasConfirmedTarget(listOf(probe(true, 150.0), probe(true, 120.0)), 100)
     )
 

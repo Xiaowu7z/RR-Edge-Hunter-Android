@@ -119,6 +119,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = bg
         window.navigationBarColor = bg
+        window.navigationBarDividerColor = bg
+        window.isNavigationBarContrastEnforced = false
+        window.decorView.setBackgroundColor(bg)
         buildHome(); buildRun(); buildResult()
         switchTo(home, "home")
         refreshStatus()
@@ -182,7 +185,11 @@ class MainActivity : Activity() {
     @SuppressLint("SetTextI18n")
     private fun buildHome() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(28), dp(20), dp(24)); setBackgroundColor(bg) }
-        home = ScrollView(this).apply { addView(root) }
+        home = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(bg)
+            addView(root)
+        }
         val brand = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         brand.addView(label("RR", 18f, Color.WHITE, true).apply { gravity = Gravity.CENTER; background = shape(accent, 13) }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { rightMargin = dp(12) })
         brand.addView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL
@@ -202,7 +209,7 @@ class MainActivity : Activity() {
                 setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("100")
             }
             addView(expectedBandwidthInput)
-            addView(label("用于判断是否提前结束；每个入围候选按约 1 秒真实下载测速。最大带宽模式会测试 20 个多样候选，流量更多。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("20 个多样候选先做 1 秒快筛，入围 IP 再做两轮 5 秒真实复测；最终排名、复制与 DNS 解析只认 5 秒复测。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(label("连接验证：TLS 严格校验 ✓ · 公开测速端口 443", 11.5f, good, true).apply { setPadding(0, dp(12), 0, 0) })
         }
         root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
@@ -220,7 +227,7 @@ class MainActivity : Activity() {
         advancedSettings.addPanel(12) {
             addView(heading("测速策略"))
             addView(segmented(listOf("均衡", "亚洲狩猎", "最大带宽"), initial = "亚洲狩猎") { strategy = it; refreshStatus() })
-            addView(label("均衡/亚洲狩猎在连续两次达到目标后提前结束；最大带宽会测试低 RTT 主体与跨延迟分位共 20 个候选，复测失败会自动补位。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("均衡/亚洲狩猎在两轮 5 秒复测均达标后提前结束；最大带宽会快筛全部 20 个多样候选。复测失败自动向下补位。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(heading("线路标签").apply { setPadding(0, dp(16), 0, dp(8)) })
             addView(segmented(listOf("自动", "中国移动", "中国电信", "中国联通"), listOf("自动", "移动", "电信", "联通"), "自动") { operatorLabel = it; refreshStatus() })
             addView(label("标签用于历史和对比；不会模拟运营商网络或改变 IP 池。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
@@ -574,7 +581,13 @@ class MainActivity : Activity() {
                     if (!isCurrentRun(lease)) return@launch
                     val candidates = selectCandidates(speedSnapshot, family, lease)
                     if (candidates.isEmpty()) { appendRunLog(lease, "$family 无安全候选，跳过"); all[family] = emptyList(); asia[family] = emptyList(); popCounts[family] = emptyMap(); return@forEachIndexed }
-                    appendRunLog(lease, "$family 候选 ${candidates.size}，最大预计流量 ≈ ${"%.1f".format(IpPipeline.estimateTrafficUpperBoundMb(candidates.size, params, expectedMbps))} MB")
+                    val traffic = IpPipeline.estimateTraffic(candidates.size, params, expectedMbps)
+                    appendRunLog(
+                        lease,
+                        "$family 候选 ${candidates.size}，按 $expectedMbps Mbps 计划流量 ≈ ${"%.1f".format(traffic.plannedMb)} MB" +
+                            (traffic.earlyStopMb?.let { "；快速达标约 ${"%.1f".format(it)} MB" } ?: "") +
+                            "（实际随速度、失败与补位变化）"
+                    )
                     val runResult = IpPipeline.runFamily(
                         argoHost = host,
                         wsPath = wsPath,
@@ -689,7 +702,7 @@ class MainActivity : Activity() {
     private fun addMetricSection(title: String, metrics: List<IpMetric>, allowCopy: Boolean, expectedMbps: Int) {
         results.addView(label(title, 14f, primary, true).apply { setPadding(0, dp(14), 0, dp(6)) })
         val dnsChampionIndex = if (allowCopy) metrics.indexOfFirst { it.isDnsSyncEligible } else -1
-        if (metrics.isEmpty()) results.addView(label("（没有通过两次真实下载复测的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
+        if (metrics.isEmpty()) results.addView(label("（没有通过两轮 5 秒真实下载复测的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
             results.addView(
                 metricCard(
                     index,
@@ -709,7 +722,7 @@ class MainActivity : Activity() {
         addView(label("$medal  ${metric.ip}${if (allowCopy) "  ⧉" else ""}", 15f, primary, true).apply {
             if (allowCopy) setOnClickListener { copy(metric.ip, "IP") }
         })
-        addView(label("${metric.family} · ${metric.source} · 1 秒下载样本 ${metric.full.size} 次", 11f, muted))
+        addView(label("${metric.family} · ${metric.source} · 5 秒复测 ${metric.full.size} 次", 11f, muted))
         val route = metric.route
         if (metric.routeValidationRequired) {
             if (route?.ok == true) {
@@ -724,12 +737,12 @@ class MainActivity : Activity() {
         if (metric.primaryPop.isNotBlank()) addView(label("入口：${metric.primaryPop} · 亚洲评分 ${metric.edgeScore}${if (metric.popDrift) " · POP 漂移" else ""}", 11f, if (metric.edgeScore > 0) good else secondary, metric.edgeScore > 0))
         when {
             metric.pre?.ok == false -> addView(label("预检失败；未进入 Full，已按 0 计入。", 10.5f, warn))
-            metric.micro?.ok == false -> addView(label("1 秒下载失败：${compactError(metric.micro?.error.orEmpty())}；已继续尝试其他候选。", 10.5f, warn))
-            metric.full.isEmpty() -> addView(label("未进入 1 秒真实下载测速。", 10.5f, warn))
-            metric.full.any { !it.ok } -> addView(label("复测含失败样本，不作为可用节点推荐。", 10.5f, warn))
+            metric.micro?.ok == false -> addView(label("1 秒快筛失败：${compactError(metric.micro?.error.orEmpty())}；已继续尝试其他候选。", 10.5f, warn))
+            metric.full.isEmpty() -> addView(label("未进入两轮 5 秒真实下载复测。", 10.5f, warn))
+            metric.full.any { !it.ok } -> addView(label("5 秒复测含失败样本，不作为可用节点推荐。", 10.5f, warn))
         }
         if (allowCopy) {
-            addView(primaryButton("复制到节点地址 / server") { copy(metric.ip, "IP") }, lp(8))
+            addView(primaryButton("复制 IP") { copy(metric.ip, "IP") }, lp(8))
             if (allowDns) addView(secondaryButton("解析到我的域名（DNS-only）") { showDnsSyncDialog(metric.ip) }, lp(8))
         } else addView(label("此项不可作为节点地址复制。", 10.5f, warn).apply { setPadding(0, dp(8), 0, 0) })
     }

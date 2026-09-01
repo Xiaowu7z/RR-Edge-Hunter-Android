@@ -193,16 +193,23 @@ object ProbeEngine {
     }
 
     /**
-     * 约 1 秒真实下载测速所需的最大响应容量。所有策略至少请求 64 MB，
-     * 避免高速线路在 800 ms 前读完较小响应而让不同模式得到不同结论；
-     * 读取端仍会在一秒时间窗到达后主动关闭，并不会固定下载完整 64 MB。
+     * 固定时间窗下载测速所需的响应容量。1 秒快筛最低准备 64 MB；
+     * 5 秒复测使用 Cloudflare 官方测速引擎当前采用的最大 250 MB 档，
+     * 尽量让高速线路跑满窗口。读取端会在时间窗到达后主动关闭，不会
+     * 固定下载完整响应；若超高速线路提前完整下载 250 MB，也属于有效实测。
      * [maximum] 保留用于兼容 1.0.0 内部调用。
      */
     @Suppress("UNUSED_PARAMETER")
-    fun speedRequestBytes(expectedMbps: Int, maximum: Boolean = false): Long {
+    fun speedRequestBytes(
+        expectedMbps: Int,
+        maximum: Boolean = false,
+        sampleMillis: Long = 5_000L
+    ): Long {
         val boundedMbps = expectedMbps.coerceIn(1, 2_000).toLong()
-        val requested = boundedMbps * 125_000L * 3L / 2L
-        return maxOf(64_000_000L, requested).coerceAtMost(256_000_000L)
+        val boundedWindow = sampleMillis.coerceIn(800L, 5_000L)
+        val requested = boundedMbps * 125_000L * (boundedWindow + 1_000L) / 1_000L
+        val floor = if (boundedWindow >= 5_000L) 250_000_000L else 64_000_000L
+        return maxOf(floor, requested).coerceAtMost(250_000_000L)
     }
 
     data class SpeedRates(
@@ -243,12 +250,12 @@ object ProbeEngine {
         bodyMs: Double,
         sampleMillis: Long
     ): SpeedSampleAssessment {
-        val minimumWindowMs = minOf(800.0, sampleMillis.toDouble())
+        val minimumWindowMs = sampleMillis.coerceIn(800L, 5_000L) * 0.8
         val fullExpectedSample = requestedBytes >= 4_000_000L && downloadedBytes >= requestedBytes
         // A complete expected body of at least 4 MB is itself strong
         // target-bandwidth evidence. Requiring a minimum duration here would
         // incorrectly reject genuine high-throughput links that finish the
-        // complete requested body well before one second. Tiny cached/error
+        // complete requested body before the configured window. Tiny cached/error
         // responses cannot use this exception.
         val safeCompleteException = fullExpectedSample
         return when {
@@ -345,7 +352,7 @@ object ProbeEngine {
     }
 
     /**
-     * 固定候选 IP、严格 TLS/SNI/Host，并在约 1 秒下载窗口内测真实吞吐。
+     * 固定候选 IP、严格 TLS/SNI/Host，并在指定下载窗口内测真实吞吐。
      * 必须同时通过真实 socket 对端匹配和 CF-RAY 校验，避免把重定向、
      * 系统代理或非 Cloudflare 响应误当成可填入节点的入口 IP。
      */
@@ -368,8 +375,8 @@ object ProbeEngine {
             return ProbeResult(ok = false, error = "端口无效", targetIp = targetIp)
         }
 
-        val boundedBytes = requestedBytes.coerceIn(32_768L, 256_000_000L)
-        val boundedWindow = sampleMillis.coerceIn(800L, 3_000L)
+        val boundedBytes = requestedBytes.coerceIn(32_768L, 250_000_000L)
+        val boundedWindow = sampleMillis.coerceIn(800L, 5_000L)
         val events = StringBuilder()
         var timing: ProbeTimingListener.Timings? = null
         var actualRemote: InetAddress? = null
@@ -390,7 +397,7 @@ object ProbeEngine {
         kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
             cont.invokeOnCancellation {
                 call.cancel()
-                log(">>> 1 秒下载测速已取消")
+                log(">>> 下载测速已取消")
             }
             try {
                 call.execute().use { response ->

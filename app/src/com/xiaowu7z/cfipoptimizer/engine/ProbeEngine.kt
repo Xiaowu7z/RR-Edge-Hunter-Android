@@ -738,19 +738,39 @@ object ProbeEngine {
         targetPort: Int = 443,
         timeoutSec: Int = 8,
         log: (String) -> Unit = {}
+    ): ArgoRouteResult = probeArgoRouteWithHost(
+        targetIp = targetIp,
+        sniHost = argoHost,
+        hostHeader = argoHost,
+        wsPath = wsPath,
+        targetPort = targetPort,
+        timeoutSec = timeoutSec,
+        log = log
+    )
+
+    /** Same route proof, preserving nodes whose TLS SNI and WS Host differ. */
+    suspend fun probeArgoRouteWithHost(
+        targetIp: String,
+        sniHost: String,
+        hostHeader: String,
+        wsPath: String = "",
+        targetPort: Int = 443,
+        timeoutSec: Int = 8,
+        log: (String) -> Unit = {}
     ): ArgoRouteResult {
         val targetAddress = verifiedPublicTarget(targetIp)
             ?: return ArgoRouteResult(
                 ok = false,
                 error = "候选必须是安全公网 IP",
                 targetIp = targetIp,
-                sni = argoHost,
-                hostHeader = argoHost,
+                sni = sniHost,
+                hostHeader = hostHeader,
                 wsPath = wsPath
             )
-        val host = argoHost.trim().lowercase(Locale.ROOT)
+        val host = AuthorizedHost.normalizeHost(sniHost)
+        val requestHost = AuthorizedHost.normalizeHost(hostHeader)
         if (targetPort !in 1..65535) {
-            return ArgoRouteResult(ok = false, error = "端口无效", targetIp = targetIp, sni = host, hostHeader = host, wsPath = wsPath)
+            return ArgoRouteResult(ok = false, error = "端口无效", targetIp = targetIp, sni = host, hostHeader = requestHost, wsPath = wsPath)
         }
         val authority = httpsAuthority(host, targetPort)
         val events = StringBuilder()
@@ -759,6 +779,7 @@ object ProbeEngine {
         val traceCall = traceClient.newCall(
             Request.Builder()
                 .url("https://$authority/cdn-cgi/trace")
+                .header("Host", requestHost)
                 .header("Cache-Control", "no-store")
                 .get()
                 .build()
@@ -809,6 +830,7 @@ object ProbeEngine {
                     val wsCall = wsClient.newCall(
                         Request.Builder()
                             .url("https://$authority$wsPath")
+                            .header("Host", requestHost)
                             .header("Connection", "Upgrade")
                             .header("Upgrade", "websocket")
                             .header("Sec-WebSocket-Version", "13")
@@ -850,7 +872,7 @@ object ProbeEngine {
                     },
                     targetIp = targetIp,
                     sni = host,
-                    hostHeader = host,
+                    hostHeader = requestHost,
                     certVerified = traceHandshake,
                     targetMatchesRemote = remoteMatches,
                     actualRemoteAddress = timing.actualRemoteAddress,
@@ -869,7 +891,7 @@ object ProbeEngine {
                     error = if (cont.isCancelled) "已取消" else "${e.javaClass.simpleName}: ${e.message?.take(100)}",
                     targetIp = targetIp,
                     sni = host,
-                    hostHeader = host,
+                    hostHeader = requestHost,
                     wsPath = wsPath
                 )
                 cont.resumeWith(Result.success(Unit))
@@ -879,13 +901,13 @@ object ProbeEngine {
                     error = "${e.javaClass.simpleName}: ${e.message?.take(100)}",
                     targetIp = targetIp,
                     sni = host,
-                    hostHeader = host,
+                    hostHeader = requestHost,
                     wsPath = wsPath
                 )
                 cont.resumeWith(Result.success(Unit))
             }
         }
-        return result ?: ArgoRouteResult(ok = false, error = "no result", targetIp = targetIp, sni = host, hostHeader = host)
+        return result ?: ArgoRouteResult(ok = false, error = "no result", targetIp = targetIp, sni = host, hostHeader = requestHost)
     }
 
     /** POP 查询（cdn-cgi/trace）——suspend + 可取消。 */

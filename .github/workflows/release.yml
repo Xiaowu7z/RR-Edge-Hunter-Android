@@ -124,7 +124,7 @@ jobs:
           printf '%s\n\n%s\n\n%s\n' \
             "CF 优选IP Android 正式版 $VERSION" \
             "构建提交：\`$GITHUB_SHA\`" \
-            "包含参考流程兼容的 100 IP 快速轮测、TLS/非 TLS、IPv4/IPv6、自定义 IP 导入，以及达标 IP 同步到 Cloudflare A/AAAA 灰云记录。" \
+            "包含 100 IP 快速轮测、VMess/VLESS 节点本地解析、原端口 TLS/SNI/Host + WebSocket 101 强制复核，以及 Cloudflare A/AAAA 灰云同步。" \
             > "$NOTES_FILE"
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

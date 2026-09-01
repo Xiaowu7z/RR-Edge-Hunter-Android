@@ -4,9 +4,9 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** is a local Android Cloudflare ingress-IP selector. In each round it generates 100 addresses from an online maintained pool, checks every address three times with 50-way concurrency, keeps the 10 lowest-latency candidates, and tests them one by one with up to five seconds of real download traffic. Only complete one-second windows contribute to peak throughput. The first IP that reaches the requested bandwidth is returned; otherwise a fresh round begins automatically.
+**CF 优选IP** is a local Android Cloudflare ingress-IP selector. First paste an existing VMess/VLESS WebSocket-over-TLS Argo node that already works in V2rayNG. The app extracts only its port, SNI, Host, and WS Path locally and immediately discards the UUID. It then generates 100 candidates per round, performs three checks with 50-way concurrency, and gives the 10 lowest-RTT candidates up to five seconds of real download traffic.
 
-The output is a bare IPv4 or IPv6 address. Put it only in the VMess/VLESS node's `address` or `server` field. Keep the node's original port, UUID, protocol, TLS SNI, HTTP Host, and WebSocket Path unchanged.
+After meeting the bandwidth target, a candidate must also pass strict TLS/SNI/Host and WebSocket `101` routing checks on the original node port. Only a candidate that passes both gates is displayed as a bare IPv4/IPv6 address. Replace only the node's `address/server`; keep every other field unchanged.
 
 ## Install
 
@@ -34,7 +34,8 @@ Leave the other options at their defaults. The repository retains only the lates
 | Transport | TLS 443 by default, with strict certificate validation; optional plain HTTP 80 |
 | Speed target | Dynamically supplied by the maintained endpoint, with cached/official fallback |
 | Candidate source | Public `baipiao.eu.org` maintained pool, optionally plus user-imported safe public IPs |
-| Output | Replace node `address/server` only |
+| Node gate | Original port, TLS SNI, HTTP Host, and WS Path must all pass |
+| Output | Only a route-verified IP; replace `address/server` only |
 
 The UI exposes one understandable mode instead of asking users to choose among Balanced, Asia Hunt, and Maximum Bandwidth. A round that does not reach the target is followed by a new round until a result is found or the user stops the scan. Traffic therefore depends on real network results and is not presented with a misleading fixed upper bound.
 
@@ -46,10 +47,10 @@ The UI exposes one understandable mode instead of asking users to choose among B
 4. Sort by average TCP latency and retain the best 10.
 5. Pin the dynamically supplied speed host to each candidate in latency order. TLS mode retains platform certificate, SNI, Host, and actual-peer checks; non-TLS mode uses port 80.
 6. Download for at most five seconds per candidate. Peak kB/s is calculated only from complete one-second windows; a final partial window is ignored.
-7. Return the first candidate whose peak reaches `target Mbps × 128 kB/s`. If optional Argo validation is enabled, it must pass as an additional gate.
-8. Begin a fresh round when none of the 10 candidates reaches the target. Copy and Cloudflare A/AAAA DNS-only synchronization are enabled only for a verified result.
+7. After reaching `target Mbps × 128 kB/s`, pin the candidate to the original node port/SNI/Host/Path and require strict TLS plus a valid WebSocket `101` upgrade.
+8. Return the first candidate that passes both bandwidth and node-route gates; otherwise continue or start a fresh round. Copy and DNS synchronization are enabled only for that result.
 
-The default workflow measures the current Android network to Cloudflare ingress. It needs neither a VPS origin IP nor an Argo hostname.
+The app never tests the VPS origin IP, but it does require an existing node template so that the selected address is proven on the same route V2rayNG will use.
 
 ## Custom candidate pools
 
@@ -57,11 +58,11 @@ The advanced panel supports long paste, IPv4/IPv6 endpoint notation, bounded CID
 
 Android's system document picker is used, so broad storage permission is not requested. The default maintained endpoints are the public interfaces used by [badafans/better-cloudflare-ip](https://github.com/badafans/better-cloudflare-ip). This project independently implements the publicly described and observable behavior; the upstream repository currently declares no open-source license, so its source code is neither copied nor bundled here.
 
-## Optional advanced Argo compatibility check
+## V2rayNG node-usability gate
 
-Normal scanning needs no hostname. Enable the advanced Argo check only to validate candidates against your own node. Supply the original TLS SNI/HTTP Host hostname, original TLS port, and optionally the WebSocket Path.
+Argo validation is now part of the main workflow. Paste a complete `vmess://` or `vless://` share link. WebSocket + TLS nodes on Cloudflare HTTPS ports `443/2053/2083/2087/2096/8443` are supported. The input is cleared after parsing; UUIDs and full links are not persisted or logged.
 
-Candidates must then pass certificate, SNI, Host, and actual-peer checks; a supplied Path must complete a standard WebSocket `101` upgrade. This is an additional gate only. The output remains a bare IP, and all other node fields stay unchanged.
+Every winner must preserve the original TLS certificate/SNI, HTTP Host, actual TCP peer, and WS Path, and receive a valid WebSocket `101` plus `Sec-WebSocket-Accept`. The output remains a bare IP and no other node field is changed.
 
 ## Optional Cloudflare DNS synchronization
 

@@ -4,9 +4,9 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。默认不需要填写域名：每轮从在线维护网段中随机生成 100 个地址，以 50 并发对每个地址执行三次 RTT + `CF-RAY` 验证，保留延迟最低的 10 个，再逐个做最多 5 秒真实下载。测速只统计完整的一秒窗口，最后不足一秒的数据不计峰值；首个达到期望带宽的 IP 立即返回，否则自动换一批继续。
+**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。用户先粘贴一个当前在 V2rayNG 能用的 VMess/VLESS WebSocket + TLS Argo 节点；应用只在本机提取端口、SNI、Host 和 WS Path，立即丢弃 UUID。随后每轮从在线维护网段中随机生成 100 个地址，以 50 并发对每个地址执行三次 RTT + `CF-RAY` 验证，保留延迟最低的 10 个，再逐个做最多 5 秒真实下载。
 
-优选结果是一个裸 IPv4 或 IPv6。把它填入 VMess / VLESS 等节点的 `address` 或 `server` 字段即可；节点原来的端口、UUID、协议、TLS SNI、HTTP Host、WS Path 等参数全部保持不变。
+达到期望带宽后，候选还必须使用原节点端口完成严格 TLS/SNI/Host 与标准 WebSocket `101` 握手；失败就继续找下一个。结果只显示通过这道节点路由复核的裸 IPv4 或 IPv6。把它填入原节点的 `address` 或 `server` 字段即可，其他参数全部保持不变。
 
 > 结果只代表本轮设备、网络出口、运营商和时间。切换 Wi-Fi、移动数据、VPN、代理或网络出口后应重新测试。
 
@@ -40,7 +40,8 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 | 连接方式 | TLS 443（默认、严格证书校验）/ 非 TLS 80 |
 | 测速地址 | 由公开维护接口动态下发；离线时使用缓存/官方备用 |
 | 候选来源 | `baipiao.eu.org` 公开维护池；可叠加用户导入的安全公网 IP |
-| 输出用途 | 只替换节点 `address/server` |
+| 节点门禁 | 必须通过所粘贴节点的原端口、TLS SNI、HTTP Host 与 WS Path |
+| 输出用途 | 只显示可通过节点路由握手的 IP；仅替换 `address/server` |
 
 ### 唯一测速模式
 
@@ -56,10 +57,10 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 4. 按三次 TCP 延迟平均值升序，只保留前 10 个候选。
 5. 按延迟顺序逐个连接动态测速主机，固定真实 TCP 目标为候选 IP；TLS 模式保留系统证书与 SNI/Host 校验，非 TLS 模式使用 80 端口。
 6. 每个候选最多下载 5 秒，以 32 KiB 读取；每个完整一秒窗口计算一次 kB/s 峰值，最后不足一秒窗口不参与。
-7. 第一个达到 `期望 Mbps × 128 kB/s` 的 IP 成为结果；若启用了 Argo 高级复核，还必须通过原节点域名验证。
-8. 10 个候选均未达到目标时自动进入新一轮。复制 IP 和 Cloudflare A/AAAA DNS-only 同步只对达标结果开放。
+7. 达到 `期望 Mbps × 128 kB/s` 后，用候选 IP、原节点端口、SNI、Host 与 WS Path 执行 TLS + WebSocket `101` 路由握手；失败即淘汰。
+8. 第一个同时通过速度和节点路由门禁的 IP 成为结果；否则继续下一个或自动进入新一轮。复制 IP 和 Cloudflare A/AAAA DNS-only 同步只对最终结果开放。
 
-默认流程测量当前手机网络到 Cloudflare 入口的质量，不需要 VPS 源站 IP，也不要求 Argo 域名。
+应用不测试或连接 VPS 源站 IP，但需要用户粘贴自己的现有节点，才能证明候选在 V2rayNG 所用端口、SNI、Host 与 WS Path 上可达。
 
 ## 自定义 IP 池
 
@@ -73,11 +74,11 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 
 默认维护数据来自 [badafans/better-cloudflare-ip](https://github.com/badafans/better-cloudflare-ip) 所使用的公开接口。本项目只复现其公开描述与可观察的测速流程，代码为独立实现；上游仓库当前未声明开源许可证，因此没有复制或内嵌其源代码。
 
-## 高级：Argo 兼容复核
+## V2rayNG 节点可用性门禁
 
-普通优选不需要域名。只有希望确认候选 IP 是否兼容自己的 Argo 节点时，才在高级设置中开启，并填写原节点域名、TLS 端口和可选 WS Path。
+Argo 复核现在是主流程，不再藏在高级设置里。首次测试先粘贴完整 `vmess://` 或 `vless://` 分享链接；当前支持 WebSocket + TLS 节点和 Cloudflare HTTPS 端口 `443/2053/2083/2087/2096/8443`。应用解析后立即清空输入框，不保存 UUID，也不把节点链接写入日志或历史。
 
-开启后，候选除公共测速外还必须使用原域名完成证书、SNI、Host 与真实对端校验；填写 Path 时必须通过标准 WebSocket `101` 握手。它只是附加复核，最终仍只复制裸 IP，节点端口、UUID、SNI、Host 与 Path 不会被工具改写。
+这道门禁验证候选 IP 能否在原节点端口保持证书、TLS SNI、HTTP Host、真实 TCP 对端和 WS Path，并必须取得标准 WebSocket `101` 与正确 `Sec-WebSocket-Accept`。它不修改节点配置；最终仍只复制裸 IP。
 
 ## 可选：同步到 Cloudflare DNS
 

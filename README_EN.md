@@ -4,7 +4,7 @@
 >
 > [Download Android APK](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk) · [Windows desktop version](https://github.com/Xiaowu7z/RR-Edge-Hunter)
 
-The app uses the native Go engine from the supplied reference APK for candidate generation, latency checks, download measurement, speed calculation, ranking, and retry rounds.
+RR Edge Hunter Android performs candidate generation, latency checks, download measurement, speed calculation, ranking, and retry rounds directly on the phone's current network.
 
 ## Features
 
@@ -21,20 +21,20 @@ Android never writes DNS automatically and never adds multiple IPs. Use the [Win
 
 1. Download and install the APK.
 2. Select IPv4/IPv6, TLS/non-TLS, and the target bandwidth.
-3. Start the scan and wait for the original engine to return one qualifying IP.
+3. Start the scan and wait for one qualifying IP.
 4. Copy the result, or manually add it to Cloudflare DNS from the result page.
 
-Defaults match the supplied APK: IPv4, non-TLS port 80, and 1 Mbps.
+Defaults are IPv4, non-TLS port 80, and 1 Mbps.
 
-## Reference engine
+## Selection flow
 
-The committed `libgojni.so` is byte-identical to the APK copy:
+1. Prepare candidates for the selected IP family and transport.
+2. Run latency checks and download measurements.
+3. Finish when one IP reaches the target bandwidth, or automatically start another round.
+4. Show the IP, bandwidth, peak speed, latency, data center, and elapsed time.
+5. Copy the result or manually add it to Cloudflare DNS.
 
-```text
-fbfea92ee11be855b5f8bbfe66bd37c5134a7472d19c0ab6699a82672df46c6a
-```
-
-The gomobile JNI bindings are also taken from the supplied APK. CI verifies the native digest before and after packaging and rejects Xray/libV2Ray content. RR does not add carrier modes, custom IP pools, or a second scan algorithm.
+Third-party source and license information is kept in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) instead of the user interface.
 
 ## Build
 

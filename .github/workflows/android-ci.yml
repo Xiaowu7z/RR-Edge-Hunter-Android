@@ -38,6 +38,19 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
 
+      - name: Fetch pinned libXray Android runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${RUNNER_TEMP}/libxray-android-v26.7.28.zip"
+          curl --fail --location --retry 3 \
+            https://github.com/XTLS/libXray/releases/download/v26.7.28/libxray-android.zip \
+            --output "$ARCHIVE"
+          echo "28b7dc9d6cc8455fcca5cbd56e387003a7bfb558128651a64899dc3a8ccff666  $ARCHIVE" | sha256sum --check --strict
+          mkdir -p app/libs
+          unzip -p "$ARCHIVE" libxray-android/libXray.aar > app/libs/libXray.aar
+          test -s app/libs/libXray.aar
+
       - name: Run deterministic tests, lint, and debug build
         run: ./gradlew --no-daemon :logic-tests:check :app:lintDebug :app:assembleDebug
 

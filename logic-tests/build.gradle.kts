@@ -21,6 +21,8 @@ kotlin {
                 "com/xiaowu7z/cfipoptimizer/engine/IpPipeline.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/MaintainedPool.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/ReferenceScanner.kt",
+                "com/xiaowu7z/cfipoptimizer/engine/NodeRouteTemplate.kt",
+                "com/xiaowu7z/cfipoptimizer/engine/XrayNodeConfig.kt",
                 "IpSourcesTest.kt",
                 "CfRangesCancellationTest.kt",
                 "AuthorizedHostTest.kt",
@@ -30,7 +32,9 @@ kotlin {
                 "SpeedWindowPolicyTest.kt",
                 "FixedDnsTest.kt",
                 "CloudflareDnsTest.kt",
-                "ReferenceScannerTest.kt"
+                "ReferenceScannerTest.kt",
+                "NodeRouteParserTest.kt",
+                "XrayNodeConfigTest.kt"
             )
         }
     }
@@ -39,6 +43,7 @@ kotlin {
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    implementation("org.json:json:20240303")
 }
 
 val logicRuntimeClasspath = sourceSets["main"].runtimeClasspath
@@ -123,6 +128,22 @@ val referenceScannerTest by tasks.registering(JavaExec::class) {
     mainClass.set("ReferenceScannerTestKt")
 }
 
+val nodeRouteParserTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies safe local extraction of VMess/VLESS Argo routing fields."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("NodeRouteParserTestKt")
+}
+
+val xrayNodeConfigTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies full-node conversion, candidate substitution, and Xray ping parsing."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("XrayNodeConfigTestKt")
+}
+
 tasks.named("check") {
     dependsOn(
         ipSourcesTest,
@@ -134,6 +155,8 @@ tasks.named("check") {
         speedWindowPolicyTest,
         fixedDnsTest,
         cloudflareDnsTest,
-        referenceScannerTest
+        referenceScannerTest,
+        nodeRouteParserTest,
+        xrayNodeConfigTest
     )
 }

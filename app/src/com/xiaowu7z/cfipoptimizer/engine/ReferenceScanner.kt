@@ -164,13 +164,17 @@ object ReferenceScanner {
                 } else log("${rtt.candidate.ip} 下载测速失败：${speed.error}")
                 if (!speed.ok || speed.peakKbps < threshold) return@forEachIndexed
                 val route = if (routeValidator != null) {
-                    onStage(Stage("Argo 域名兼容复核", 0, 1, rtt.candidate.ip))
+                    onStage(Stage("V2rayNG 同口径节点复核", 0, 1, rtt.candidate.ip))
                     routeValidator(rtt.candidate.ip).also {
-                        onStage(Stage("Argo 域名兼容复核", 1, 1, rtt.candidate.ip))
+                        // Native Xray calls are blocking. A Stop/Back request
+                        // can arrive while the call is in progress, so never
+                        // accept its result before observing cancellation.
+                        coroutineContext.ensureActive()
+                        onStage(Stage("V2rayNG 同口径节点复核", 1, 1, rtt.candidate.ip))
                     }
                 } else null
                 if (route != null && !route.ok) {
-                    log("${rtt.candidate.ip} 达到带宽，但未通过 Argo 兼容复核，继续下一个")
+                    log("${rtt.candidate.ip} 达到带宽，但完整节点在 Xray 中未连通，继续下一个")
                     return@forEachIndexed
                 }
                 if (networkInvalid()) throw IllegalStateException("测试期间网络出口发生变化")

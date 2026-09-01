@@ -1,8 +1,12 @@
 # 第三方组件说明
 
-正式 APK 在构建时下载并校验固定版本的 [XTLS/libXray v26.7.28](https://github.com/XTLS/libXray/releases/tag/v26.7.28)，用于完整 VMess/VLESS 节点的本地 Xray 出站延迟测试。
+## 提供的参考 APK 原生引擎
 
-- libXray：MIT License，Copyright (c) 2023-2025 XTLS；许可证文本随 APK 位于 `assets/third_party/libXray-MIT.txt`。
-- Xray-core：Mozilla Public License 2.0；许可证文本随 APK 位于 `assets/third_party/Xray-core-MPL-2.0.txt`，对应源代码可在 [XTLS/Xray-core v26.7.28](https://github.com/XTLS/Xray-core/tree/v26.7.28) 获取。
+本项目按用户要求内置提供 APK 中未修改的 `arm64-v8a/libgojni.so`，并使用该 APK 的 gomobile JNI 绑定接口。
 
-本项目没有修改上述第三方组件。构建流程校验 Android 归档 SHA-256：`28b7dc9d6cc8455fcca5cbd56e387003a7bfb558128651a64899dc3a8ccff666`。
+- 参考 APK SHA-256：`5d700e43345dfb291887f8777a3d442e2829445d6f58b5c4e12abd08dfc9e68c`
+- `libgojni.so` SHA-256：`fbfea92ee11be855b5f8bbfe66bd37c5134a7472d19c0ab6699a82672df46c6a`
+
+该二进制内可观察到 `better-cloudflare-ip` 的候选、RTT、CF-RAY、下载测速与数据接口流程。构建不对其原生代码进行修改。
+
+提供的 APK 未附带可识别的许可证文件。分发者应自行确认其取得的使用与再分发授权；本说明不授予额外权利。

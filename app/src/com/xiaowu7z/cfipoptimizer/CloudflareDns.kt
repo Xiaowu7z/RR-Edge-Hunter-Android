@@ -138,7 +138,7 @@ object CloudflareDns {
             label.length in 1..63 && label.first().isLetterOrDigit() &&
                 label.last().isLetterOrDigit() && label.all { it.isLetterOrDigit() || it == '-' }
         }) { "DNS 记录名格式无效" }
-        require(IpSources.parseLiteralAddress(ascii) == null) { "DNS 记录名不能是 IP" }
+        require(IpAddress.parseLiteralAddress(ascii) == null) { "DNS 记录名不能是 IP" }
         return ascii
     }
 
@@ -149,9 +149,9 @@ object CloudflareDns {
         transport: Transport = OkHttpTransport
     ): SyncPlan {
         val config = normalizeConfig(configInput)
-        val ip = IpSources.normalizeIp(championIp)
-        require(IpSources.isPublicAddress(IpSources.parseLiteralAddress(ip)!!)) {
-            "只允许同步本轮严格复测确认的安全公网 IP"
+        val ip = IpAddress.normalizeIp(championIp)
+        require(IpAddress.isPublicAddress(IpAddress.parseLiteralAddress(ip)!!)) {
+            "只允许同步参考引擎返回的安全公网 IP"
         }
         val type = if (ip.contains(':')) RecordType.AAAA else RecordType.A
         return inspectNormalized(config, type, ip, transport)
@@ -167,9 +167,9 @@ object CloudflareDns {
         require(config.zoneId == confirmedPlan.zoneId && config.recordName == confirmedPlan.name) {
             "DNS 配置与已确认预览不一致，请重新预览"
         }
-        val canonicalIp = IpSources.normalizeIp(confirmedPlan.content)
-        require(IpSources.isPublicAddress(IpSources.parseLiteralAddress(canonicalIp)!!)) {
-            "只允许同步本轮严格复测确认的安全公网 IP"
+        val canonicalIp = IpAddress.normalizeIp(confirmedPlan.content)
+        require(IpAddress.isPublicAddress(IpAddress.parseLiteralAddress(canonicalIp)!!)) {
+            "只允许同步参考引擎返回的安全公网 IP"
         }
         val expectedType = if (canonicalIp.contains(':')) RecordType.AAAA else RecordType.A
         require(expectedType == confirmedPlan.type) { "已确认预览中的记录类型无效" }
@@ -252,7 +252,7 @@ object CloudflareDns {
         val current = sameType.singleOrNull()
         val currentId = current?.let { validateRecordId(it.id) }
         val unchanged = current != null &&
-            runCatching { IpSources.normalizeIp(current.content) }.getOrNull() == ip &&
+            runCatching { IpAddress.normalizeIp(current.content) }.getOrNull() == ip &&
             current.ttl == 1 && current.proxied == false
         return SyncPlan(
             action = when {
@@ -307,7 +307,7 @@ object CloudflareDns {
         expectedName: String,
         expectedIp: String
     ) {
-        val actualIp = runCatching { IpSources.normalizeIp(record.content) }.getOrNull()
+        val actualIp = runCatching { IpAddress.normalizeIp(record.content) }.getOrNull()
         val verified = record.id.equals(expectedId, ignoreCase = true) &&
             record.type.equals(expectedType.name, ignoreCase = true) &&
             normalizeUpstreamName(record.name) == expectedName &&

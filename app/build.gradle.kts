@@ -20,8 +20,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
-        // The reference app is arm64-only too. Keeping one ABI avoids a
-        // misleading 200+ MiB universal APK with four Xray runtimes.
+        // The supplied reference APK and its exact Go engine are arm64-only.
         ndk.abiFilters += listOf("arm64-v8a")
     }
 
@@ -62,11 +61,11 @@ android {
         java.srcDirs("src")
         res.srcDirs("res")
         assets.srcDirs("assets")
+        jniLibs.srcDirs("src/main/jniLibs")
     }
 }
 
 dependencies {
-    implementation(files("libs/libXray.aar"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

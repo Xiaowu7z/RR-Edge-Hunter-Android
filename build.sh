@@ -4,6 +4,10 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
+echo "fbfea92ee11be855b5f8bbfe66bd37c5134a7472d19c0ab6699a82672df46c6a  app/src/main/jniLibs/arm64-v8a/libgojni.so" |
+  sha256sum --check --strict
+python3 tools/verify_reference_contract.py
+
 VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n 1)"
 if [ -z "$VERSION_NAME" ]; then
   echo "无法从 app/build.gradle.kts 读取 versionName" >&2

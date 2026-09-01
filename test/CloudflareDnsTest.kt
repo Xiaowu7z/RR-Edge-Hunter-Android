@@ -251,7 +251,7 @@ fun main() {
     }
     val externalChampion = CloudflareDns.inspect(config, "1.1.1.1", FakeDnsTransport())
     check(
-        "严格复测确认后的外部公网冠军可生成 DNS 预览",
+        "参考引擎返回的公网 IP 可生成 DNS 预览",
         externalChampion.action == CloudflareDns.Action.CREATE &&
             externalChampion.content == "1.1.1.1" &&
             externalChampion.type == CloudflareDns.RecordType.A

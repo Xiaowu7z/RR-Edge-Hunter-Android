@@ -1,31 +1,10 @@
-# Android 更新日志 / Changelog
+# Android 更新日志
 
 ## 1.0.0
 
-- 建立 RR Edge Hunter Android 独立仓库，应用名为 **CF 优选IP**，包名为 `com.xiaowu7z.cfipoptimizer`。
-- 默认流程改为免域名 Cloudflare IP 优选：固定 `speed.cloudflare.com:443`，从官方默认池及用户可选导入的安全公网候选执行严格 TLS、多阶段、多轮实测。
-- 首页默认设为 IPv4、100 Mbps、亚洲狩猎；稳定速度与成功率优先，亚洲 POP 仅在同档成绩中加分。
-- 结果输出裸 IP，只用于节点 `address/server`；节点端口、UUID、协议、SNI、Host 与 WS Path 保持不变。
-- 增加高级可选 Argo 兼容复核，支持原域名、TLS 端口和严格 WebSocket 101 校验，但不改变默认免域名流程。
-- 支持长复制、TXT/CSV/TSV/JSON/Base64、受控 CIDR、系统文件选择器和 HTTPS 订阅；导入 IP 无需命中当前 DNS 或预先属于官方 CIDR，但必须是安全公网地址，并在输出前通过严格 TLS/真实对端/CF-RAY 双样本复测。
-- 快筛改为每候选三次 TCP connect RTT；移动网络自动降低并发，严格 TLS 下载校验只对入围候选执行。
-- 最大带宽扩大为 20 个多样候选；达标复测、最快候选复测与高级 Argo 验证均支持失败自动补位。
-- 修复均衡与亚洲狩猎被单一低延迟网段垄断后全部测速失败的问题：三种模式共享 20 个跨延迟的一秒快筛候选，均衡与亚洲狩猎继续保留达标早停。
-- 失败结果显示具体的下载/TLS/HTTP 原因，便于判断线路问题，不再只显示笼统的 0 Mbps。
-- 测速改为“20 个候选 1 秒快筛 + 入围 IP 两轮 5 秒真实复测”；最终排名、复制 IP 和 DNS 同步只采用 5 秒复测结果。
-- 修复单个超大响应的 5 秒复测在部分 Android 网络上断流后，三个模式全部显示 0 Mbps 的回归：每轮改为 5 个独立 1 秒严格下载段累计，任一段失败会显示具体段号和原因。
-- 流量提示改为按目标带宽计算计划值和达标早停值，不再把最大 HTTP 响应容量误报成必然下载流量。
-- 修复首页折叠高级设置时透明滚动区域露出系统灰色背景的问题，并把结果按钮精简为“复制 IP”。
-- 真实下载窗口只接受 2xx、有效 `CF-RAY` 和足量/足时样本，并分别统计 Payload、完整传输与 Call 总速率。
-- CF 官方 CIDR 样本支持每轮有界轮转；长粘贴解析移出主线程。
-- 增加 Cloudflare DNS 可选同步：IPv4=A、IPv6=AAAA、强制 DNS-only；Zone ID 与完整 FQDN 必填，采用只读预览、二次确认和写后回读验证，拒绝 CNAME 和重复记录。
-- Cloudflare Token 最小权限为指定 Zone 的 Zone/DNS/Edit；Token 不进入日志、历史或导出。
-- Android 默认只在会话内存保存 Token；用户可显式选择 Android Keystore 加密保存并随时清除。
-- 保留运营商标签、IPv4/IPv6/双栈、均衡/亚洲狩猎、本地历史、停止取消和网络变化作废保护。
-- 版本号保持 **1.0.0**，测试包与正式包使用相同正式签名。
-
-### English summary
-
-- Hostname-free default scan via pinned `speed.cloudflare.com:443` with IPv4 / 100 Mbps / Asia Hunt defaults.
-- Bare-IP output changes node `address/server` only; optional Argo verification is an advanced gate.
-- Optional two-phase DNS-only A/AAAA synchronization with session-only tokens by default and explicit Android Keystore storage.
+- 删除 RR 自写候选池、RTT、CF-RAY、下载测速、速度计算、排名与换轮代码。
+- 删除节点链接、VMess/VLESS、Xray、运营商模式和自定义 IP 池。
+- 原样内置提供的参考 APK 中 `arm64-v8a/libgojni.so` 与 gomobile JNI 绑定。
+- 首页只保留参考 App 的 IPv4/IPv6、TLS/非 TLS和期望带宽。
+- 保留参考 App 的停止、数据更新、结果与历史能力。
+- 唯一额外业务功能为用户从结果页手动发起的 Cloudflare DNS-only A/AAAA 预览、确认和回读验证；扫描结束不会自动写 DNS。

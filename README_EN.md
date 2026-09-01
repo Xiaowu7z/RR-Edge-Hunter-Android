@@ -4,7 +4,7 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** is a local Android Cloudflare ingress-IP selector. The default scan requires no user hostname: it performs three direct TCP-connect RTT checks and a one-second download funnel, then pins `speed.cloudflare.com` to finalists on port `443` for two strict cumulative five-second real-download confirmations. Each confirmation aggregates five independent one-second download segments with certificate, SNI, Host, actual-peer, and `CF-RAY` validation.
+**CF 优选IP** is a local Android Cloudflare ingress-IP selector. In each round it generates 100 addresses from an online maintained pool, checks every address three times with 50-way concurrency, keeps the 10 lowest-latency candidates, and tests them one by one with up to five seconds of real download traffic. Only complete one-second windows contribute to peak throughput. The first IP that reaches the requested bandwidth is returned; otherwise a fresh round begins automatically.
 
 The output is a bare IPv4 or IPv6 address. Put it only in the VMess/VLESS node's `address` or `server` field. Keep the node's original port, UUID, protocol, TLS SNI, HTTP Host, and WebSocket Path unchanged.
 
@@ -16,7 +16,7 @@ Current version: **1.0.0** (`com.xiaowu7z.cfipoptimizer`)
 
 ### Obtainium
 
-[Add this app to Obtainium for automatic updates](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android). This uses Obtainium's simple official `obtainium://add/<repository>` deep link, with no JSON, regular expression, or percent-encoded payload. Confirm Add; Obtainium will select the repository's only stable APK automatically. If Android does not hand the link to Obtainium, open Obtainium, tap **Add App**, and paste this repository address into **Source URL**:
+[Add this app to Obtainium for automatic updates](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Afalse%2C%5C%22releaseDateAsVersion%5C%22%3Atrue%2C%5C%22versionDetection%5C%22%3Afalse%2C%5C%22apkFilterRegEx%5C%22%3A%5C%22%5ECF-IP-Optimizer%5C%5C%5C%5C.apk%24%5C%22%2C%5C%22invertAPKFilter%5C%22%3Afalse%2C%5C%22autoApkFilterByArch%5C%22%3Afalse%7D%22%7D). The official full-config link fixes the package ID, GitHub source, exact stable APK asset, release-date update detection, and disables prereleases and CPU filtering. This lets Obtainium notice a re-published stable Release even while the app version remains 1.0.0 as requested. Confirm once; no advanced choices are required. If Android does not hand the link to Obtainium, open Obtainium, tap **Add App**, and paste this repository address into **Source URL**:
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
@@ -30,38 +30,32 @@ Leave the other options at their defaults. The repository retains only the lates
 | --- | --- |
 | Address family | IPv4 |
 | Target bandwidth | 100 Mbps |
-| Default strategy | Asia Hunt |
-| Available strategies | Balanced / Asia Hunt / Maximum Bandwidth |
-| Measurement identity | `speed.cloudflare.com:443` |
-| Candidate source | Official Cloudflare default pool, optionally plus any user-imported safe public IPs |
+| Scan flow | Fast selection: 100 IPs → three checks → 10 lowest RTT → first target hit |
+| Transport | TLS 443 by default, with strict certificate validation; optional plain HTTP 80 |
+| Speed target | Dynamically supplied by the maintained endpoint, with cached/official fallback |
+| Candidate source | Public `baipiao.eu.org` maintained pool, optionally plus user-imported safe public IPs |
 | Output | Replace node `address/server` only |
 
-All strategies run three TCP-connect RTT checks for up to 100 candidates per family, rejecting a candidate if any round fails. A diverse 20-address shortlist—a low-RTT majority plus cross-latency quantiles—then receives one-second strict download samples. Only the leading two or three candidates receive two cumulative five-second confirmations, each built from five independent one-second strict downloads. Balanced and Asia Hunt stop after both confirmation rounds meet the target; Maximum Bandwidth completes the 20-address funnel. Copying, DNS synchronization, and final ranking use only the cumulative confirmation samples.
-
-### Strategies
-
-- **Balanced:** stop after two cumulative five-second confirmations meet the target, balancing speed and traffic.
-- **Asia Hunt:** the same confirmed cumulative five-second early-stop behavior, with Asian POPs used only as same-tier tie-breakers.
-- **Maximum Bandwidth:** run the one-second funnel across all 20 diverse IPs, then select by two confirmed cumulative five-second samples.
+The UI exposes one understandable mode instead of asking users to choose among Balanced, Asia Hunt, and Maximum Bandwidth. A round that does not reach the target is followed by a new round until a result is found or the user stops the scan. Traffic therefore depends on real network results and is not presented with a misleading fixed upper bound.
 
 ## How it works
 
-1. Load current `speed.cloudflare.com` DNS seeds and a bounded per-run rotating sample from Cloudflare-published CIDRs.
-2. Optionally add safe public IP literals as restricted candidates; private, loopback, link-local, and reserved addresses never enter probing.
-3. Pin `speed.cloudflare.com:443` to each candidate while retaining platform certificate, SNI, Host, and actual TCP-peer validation.
-4. Run three direct TCP-connect RTT checks for up to 100 candidates per family; any failed round rejects that candidate. Concurrency is capped at 32 on Wi-Fi and 16 on mobile networks.
-5. Every mode uses a 20-address shortlist with a low-RTT majority plus cross-latency quantiles.
-6. All 20 shortlisted candidates receive a one-second strict TLS/SNI/peer/CF-RAY download funnel. Redirects, undersized bodies, and samples shorter than the guarded window are rejected.
-7. Leading candidates receive two cumulative five-second confirmations. Each round combines five independent one-second strict downloads; a failed segment reports its exact index and causes backfill from the next funnel result.
-8. Only candidates with both cumulative five-second samples successful can be copied or synchronized to DNS. Maximum Bandwidth selects by the confirmed average; the other modes prioritize reliable floor and stability.
+1. Fetch IPv4/IPv6 ranges, the current speed-test URL, and the POP-location table from `https://www.baipiao.eu.org/cloudflare/`; cache successful data for six hours.
+2. Sample up to 100 ranges per round. IPv4 retains the first three octets and randomizes the last; IPv6 retains the first three hextets and randomizes the remaining five. Safe user-imported IPs can occupy part of the round.
+3. Check every candidate three times with 50-way concurrency. Each attempt includes TCP, optional TLS, and a `Host: cloudflare.com` request; any failed attempt or missing `CF-RAY` rejects the candidate.
+4. Sort by average TCP latency and retain the best 10.
+5. Pin the dynamically supplied speed host to each candidate in latency order. TLS mode retains platform certificate, SNI, Host, and actual-peer checks; non-TLS mode uses port 80.
+6. Download for at most five seconds per candidate. Peak kB/s is calculated only from complete one-second windows; a final partial window is ignored.
+7. Return the first candidate whose peak reaches `target Mbps × 128 kB/s`. If optional Argo validation is enabled, it must pass as an additional gate.
+8. Begin a fresh round when none of the 10 candidates reaches the target. Copy and Cloudflare A/AAAA DNS-only synchronization are enabled only for a verified result.
 
 The default workflow measures the current Android network to Cloudflare ingress. It needs neither a VPS origin IP nor an Argo hostname.
 
 ## Custom candidate pools
 
-The advanced panel supports long paste, IPv4/IPv6 endpoint notation, bounded CIDRs, TXT/CSV/TSV/JSON/Base64 files, and public HTTPS subscriptions. Imported candidates need not intersect the speed hostname's current DNS answers or belong to a published Cloudflare CIDR. Private, loopback, link-local, reserved, wrong-family, and malformed entries are rejected. An external public address is only a restricted input: it becomes copyable or DNS-syncable only after two cumulative five-second `speed.cloudflare.com:443` samples pass platform certificate, SNI, Host, actual TCP-peer, 2xx, valid `CF-RAY`, duration, and payload checks. Each family is capped at 100 candidates, imports at 60 per family, and concurrency and traffic are bounded.
+The advanced panel supports long paste, IPv4/IPv6 endpoint notation, bounded CIDRs, TXT/CSV/TSV/JSON/Base64 files, and public HTTPS subscriptions. Imported candidates need not intersect the current speed-host DNS answers or belong to a published Cloudflare CIDR. Private, loopback, link-local, reserved, wrong-family, and malformed entries are rejected. An external public address remains unusable until it passes the same three checks and real-download gate.
 
-Android's system document picker is used, so broad storage permission is not requested. Unofficial third-party relays are not mixed into the default official pool.
+Android's system document picker is used, so broad storage permission is not requested. The default maintained endpoints are the public interfaces used by [badafans/better-cloudflare-ip](https://github.com/badafans/better-cloudflare-ip). This project independently implements the publicly described and observable behavior; the upstream repository currently declares no open-source license, so its source code is neither copied nor bundled here.
 
 ## Optional advanced Argo compatibility check
 
@@ -88,8 +82,8 @@ DNS synchronization is an optional output and does not alter the Argo hostname o
 ## Security and privacy
 
 - The app requests only Internet and network-state permissions.
-- The one-click default pool is bounded to official Cloudflare ranges. Explicit imports accept only safe public literals, do not inherit a system HTTP proxy, and remain unusable until strict validation passes.
-- TLS certificate, SNI, Host, and actual-peer validation remain enabled.
+- The default pool is downloaded from a public maintained endpoint and cached locally, with official Cloudflare ranges as the offline fallback. Explicit imports accept only safe public literals and remain unusable until the same live checks pass.
+- TLS mode keeps platform certificate, SNI, Host, and actual-peer validation enabled. Plain HTTP 80 requires an explicit user choice.
 - HTTPS subscriptions enforce public-target, size, redirect, and DNS-rebinding checks.
 - API tokens never enter logs, history, or exports; persistent storage is explicit and Keystore-backed.
 - The app does not provide port scanning, vulnerability testing, stress testing, arbitrary hosts/route changes, proxy configuration, or access-control bypass.

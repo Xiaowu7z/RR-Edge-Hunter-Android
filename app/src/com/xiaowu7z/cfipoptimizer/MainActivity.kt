@@ -24,12 +24,11 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.xiaowu7z.cfipoptimizer.engine.AuthorizedHost
-import com.xiaowu7z.cfipoptimizer.engine.AuthorizedHostSnapshot
-import com.xiaowu7z.cfipoptimizer.engine.CandidatePool
-import com.xiaowu7z.cfipoptimizer.engine.CfRanges
 import com.xiaowu7z.cfipoptimizer.engine.IpMetric
 import com.xiaowu7z.cfipoptimizer.engine.IpPipeline
+import com.xiaowu7z.cfipoptimizer.engine.MaintainedPool
 import com.xiaowu7z.cfipoptimizer.engine.ProbeEngine
+import com.xiaowu7z.cfipoptimizer.engine.ReferenceScanner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,7 +101,7 @@ class MainActivity : Activity() {
     private var currentPage = "home"
     private var unregisterNetworkWatch: (() -> Unit)? = null
     private var protocol = "IPv4"
-    private var strategy = "亚洲狩猎"
+    private var useTls = true
     private var operatorLabel = "自动"
     private var advancedValidation = false
     private var sessionCloudflareToken: CloudflareApiToken? = null
@@ -209,8 +208,12 @@ class MainActivity : Activity() {
                 setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("100")
             }
             addView(expectedBandwidthInput)
-            addView(label("20 个多样候选先做 1 秒快筛，入围 IP 再做两轮累计 5 秒真实复测；每轮由 5 个独立下载段合成，最终排名、复制与 DNS 只认复测结果。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
-            addView(label("连接验证：TLS 严格校验 ✓ · 公开测速端口 443", 11.5f, good, true).apply { setPadding(0, dp(12), 0, 0) })
+            addView(heading("连接方式").apply { setPadding(0, dp(16), 0, dp(8)) })
+            addView(segmented(listOf("TLS", "非 TLS"), listOf("TLS · 443（推荐）", "非 TLS · 80"), "TLS") {
+                useTls = it == "TLS"; refreshStatus()
+            })
+            addView(label("每轮随机生成 100 个 IP，50 并发做三次 RTT/CF-RAY 验证；保留最低延迟 10 个逐个进行最多 5 秒下载测速，首个达标立即返回。", 11f, muted).apply { setPadding(0, dp(8), 0, 0) })
+            addView(label("TLS 模式使用系统证书严格校验；测速端口不会覆盖节点原端口。", 11.5f, good, true).apply { setPadding(0, dp(10), 0, 0) })
         }
         root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
         root.addView(secondaryButton("历史记录") { showHistory() }, lp(8))
@@ -219,19 +222,16 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
-        root.addView(secondaryButton("高级设置（策略、运营商、IP 池、Argo 复核）") {
+        root.addView(secondaryButton("高级设置（运营商、IP 池、Argo 复核）") {
             advancedSettings.visibility = if (advancedSettings.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }, lp(8))
         root.addView(advancedSettings)
 
         advancedSettings.addPanel(12) {
-            addView(heading("测速策略"))
-            addView(segmented(listOf("均衡", "亚洲狩猎", "最大带宽"), initial = "亚洲狩猎") { strategy = it; refreshStatus() })
-            addView(label("均衡/亚洲狩猎在两轮 5 秒复测均达标后提前结束；最大带宽会快筛全部 20 个多样候选。复测失败自动向下补位。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
-            addView(heading("线路标签").apply { setPadding(0, dp(16), 0, dp(8)) })
+            addView(heading("线路标签"))
             addView(segmented(listOf("自动", "中国移动", "中国电信", "中国联通"), listOf("自动", "移动", "电信", "联通"), "自动") { operatorLabel = it; refreshStatus() })
             addView(label("标签用于历史和对比；不会模拟运营商网络或改变 IP 池。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
-            addView(label("测速固定使用 speed.cloudflare.com + TLS 443；这不会覆盖你节点原来的 2053 / 8443 等端口。", 11f, good).apply { setPadding(0, dp(10), 0, 0) })
+            addView(label("测速使用维护端点下发的动态地址；TLS 443 / 非 TLS 80 只用于本轮测速，不覆盖节点原端口。", 11f, good).apply { setPadding(0, dp(10), 0, 0) })
         }
 
         advancedSettings.addPanel(12) {
@@ -259,7 +259,7 @@ class MainActivity : Activity() {
 
         advancedSettings.addPanel(12) {
             addView(heading("自定义 IP 池 · 可选"))
-            addView(label("无需导入：默认包含公开测速域名 DNS 种子和 Cloudflare 官方 CIDR 每轮有界轮转样本。也可长复制、上传文件或订阅 IP 池。", 11.5f, muted))
+            addView(label("无需导入：默认使用公开维护的 IPv4/IPv6 网段与动态测速地址。也可长复制、上传文件或订阅 IP 池。", 11.5f, muted))
             customPanel = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE
                 customIpsInput = input("粘贴 IPv4 / IPv6 / IP:443 / CIDR；支持长复制", true); addView(customIpsInput, lp(12))
                 addView(primaryButton("应用粘贴内容") { applyManualIpsAsync(true) }, lp(8))
@@ -279,9 +279,9 @@ class MainActivity : Activity() {
 
         advancedSettings.addPanel(12) {
             addView(heading("安全边界"))
-            addView(label("• 默认池仅使用 Cloudflare 官方网段；用户导入仅接受公网 IP，并受总量、并发和流量上限约束。", 12f, secondary))
-            addView(label("• 外部候选必须通过严格 TLS/SNI/真实对端/CF-RAY 下载复测，失败结果不可复制。", 12f, secondary))
-            addView(label("• 默认只测 speed.cloudflare.com，不要求你提供节点域名或源站 IP。", 12f, secondary))
+            addView(label("• 在线维护数据缓存 6 小时；更新失败使用上次缓存，再失败回退 Cloudflare 官方网段。", 12f, secondary))
+            addView(label("• 外部候选与维护池候选都必须通过三次 RTT/CF-RAY 和真实下载测速。", 12f, secondary))
+            addView(label("• 普通优选不要求你提供节点域名或源站 IP。", 12f, secondary))
             addView(label("• 默认只复制裸 IP，不改 hosts、路由或系统代理。DNS 同步必须在结果页二次确认。", 12f, secondary))
         }
     }
@@ -290,15 +290,15 @@ class MainActivity : Activity() {
     private fun refreshStatus() {
         if (!::status.isInitialized) return
         val info = NetEnv.detect(this)
-        val pool = "CF 官方池${if (importedIps.isNotEmpty()) " + 导入 ${importedIps.size}" else ""}"
+        val pool = "在线维护池${if (importedIps.isNotEmpty()) " + 导入 ${importedIps.size}" else ""}"
         status.text = "${info.label} · 线路：${effectiveOperator(info)} · 候选：$pool"
-        protocolSummary.text = "$protocol · $strategy${if (advancedValidation) " · 高级复核" else ""}"
+        protocolSummary.text = "$protocol · ${if (useTls) "TLS 443" else "非 TLS 80"}${if (advancedValidation) " · 高级复核" else ""}"
     }
     private fun refreshImportStatus(error: String? = null) {
         if (!::importStatus.isInitialized) return
         when {
             error != null -> { importStatus.text = error; importStatus.setTextColor(bad) }
-            importedIps.isEmpty() -> { importStatus.text = "尚未导入；一键优选仍会使用公开测速域名 DNS 种子与 CF 官方受控抽样。"; importStatus.setTextColor(muted) }
+            importedIps.isEmpty() -> { importStatus.text = "尚未导入；一键优选仍会使用在线维护 IP 池。"; importStatus.setTextColor(muted) }
             else -> { importStatus.text = "已导入 ${importedIps.size} 个 IP · $importDescription"; importStatus.setTextColor(good) }
         }
     }
@@ -530,18 +530,9 @@ class MainActivity : Activity() {
             Toast.makeText(this, "高级复核仅支持 Cloudflare HTTPS 端口：443/2053/2083/2087/2096/8443", Toast.LENGTH_LONG).show(); return
         }
         val argoPort = parsedArgoPort ?: 443
+        val tlsMode = useTls
         val families = when (protocol) { "IPv4" -> listOf("IPv4"); "IPv6" -> listOf("IPv6"); else -> listOf("IPv4", "IPv6") }.filterNot { it == "IPv6" && !network.ipv6Available }
         if (families.isEmpty()) { Toast.makeText(this, "所选协议族没有可用链路", Toast.LENGTH_LONG).show(); return }
-        val baseParams = when (strategy) {
-            "亚洲狩猎" -> IpPipeline.ASIA_HUNT
-            "最大带宽" -> IpPipeline.MAX_BANDWIDTH
-            else -> IpPipeline.BALANCED
-        }
-        val params = baseParams.copy(
-            preConcurrency = if (network.networkType == "Mobile") {
-                minOf(16, baseParams.preConcurrency)
-            } else baseParams.preConcurrency
-        )
         val lease = beginRunLease()
         logQueue.clear(); logLines.clear(); logs.text = ""; progress.progress = 0; percent.text = "0%"; switchTo(run, "run")
         val networkChanged = AtomicBoolean(false)
@@ -555,59 +546,52 @@ class MainActivity : Activity() {
         attachRunWatcher(lease, watcher)
         val job = scope.launch {
             try {
-                appendRunLog(lease, "=== $strategy / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
-                appendRunLog(lease, "主模式：公开测速主机 ${ProbeEngine.SPEED_HOST}:443 · 目标 ${expectedMbps} Mbps")
-                appendRunLog(lease, "TCP 三次快筛并发：${params.preConcurrency}（${network.networkType} 自适应）")
+                appendRunLog(lease, "=== 快速优选 / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
+                appendRunLog(lease, "流程：每轮 100 IP · 50 并发 × 3 次 RTT/CF-RAY · 最低延迟 10 个逐个下载")
+                appendRunLog(lease, "目标：$expectedMbps Mbps · ${if (tlsMode) "TLS 443（严格证书校验）" else "非 TLS 80"}")
                 if (advancedValidation) appendRunLog(lease, "高级复核：$host:$argoPort；WS Path=${wsPath.ifBlank { "未填写" }}")
-                setStage(lease, "刷新 Cloudflare 网段"); CfRanges.refresh()
+                setStage(lease, "加载在线维护 IP 池")
+                val maintained = MaintainedPool.load(filesDir) { appendRunLog(lease, it) }
                 if (!isCurrentRun(lease)) return@launch
-                appendRunLog(lease, "Cloudflare 网段：IPv4=${if (CfRanges.v4FromOnline) "在线" else "内置备用"} / IPv6=${if (CfRanges.v6FromOnline) "在线" else "内置备用"}")
-                setStage(lease, "获取公开测速 DNS 种子")
-                val speedSnapshot = try {
-                    AuthorizedHost.snapshot(ProbeEngine.SPEED_HOST) { appendRunLog(lease, it.replace("授权 DNS", "测速域名 DNS")) }
-                } catch (e: Exception) {
-                    appendRunLog(lease, "公开测速 DNS 种子获取失败，继续使用 CF 官方网段抽样")
-                    AuthorizedHostSnapshot(ProbeEngine.SPEED_HOST, emptyList(), emptyList())
-                }
-                if (!isCurrentRun(lease)) return@launch
+                appendRunLog(lease, "数据：${maintained.source} · IPv4 ${maintained.ipv4Ranges.size} 段 / IPv6 ${maintained.ipv6Ranges.size} 段")
+                appendRunLog(lease, "动态测速地址：${maintained.speedHost}${maintained.speedPath}")
                 if (advancedValidation) {
                     setStage(lease, "检查高级复核域名")
                     AuthorizedHost.snapshot(host) { appendRunLog(lease, it) }
                 }
                 if (!isCurrentRun(lease)) return@launch
+                val argoValidator: (suspend (String) -> ProbeEngine.ArgoRouteResult)? = if (advancedValidation) {
+                    { ip ->
+                        ProbeEngine.probeArgoRoute(ip, host, wsPath, argoPort, 8) {
+                            appendRunLog(lease, "  $it")
+                        }
+                    }
+                } else null
                 val all = LinkedHashMap<String, List<IpMetric>>(); val asia = LinkedHashMap<String, List<IpMetric>>(); val popCounts = LinkedHashMap<String, Map<String, Int>>()
                 var invalid = false
                 families.forEachIndexed { idx, family ->
                     if (!isCurrentRun(lease)) return@launch
-                    val candidates = selectCandidates(speedSnapshot, family, lease)
-                    if (candidates.isEmpty()) { appendRunLog(lease, "$family 无安全候选，跳过"); all[family] = emptyList(); asia[family] = emptyList(); popCounts[family] = emptyMap(); return@forEachIndexed }
-                    val traffic = IpPipeline.estimateTraffic(candidates.size, params, expectedMbps)
-                    appendRunLog(
-                        lease,
-                        "$family 候选 ${candidates.size}，按 $expectedMbps Mbps 计划流量 ≈ ${"%.1f".format(traffic.plannedMb)} MB" +
-                            (traffic.earlyStopMb?.let { "；快速达标约 ${"%.1f".format(it)} MB" } ?: "") +
-                            "（实际随速度、失败与补位变化）"
-                    )
-                    val runResult = IpPipeline.runFamily(
-                        argoHost = host,
-                        wsPath = wsPath,
+                    val winner = ReferenceScanner.scanFamily(
                         family = family,
-                        candidates = candidates,
-                        params = params,
-                        asiaHunt = strategy == "亚洲狩猎",
-                        argoPort = argoPort,
+                        data = maintained,
+                        customIps = importedIps,
                         expectedMbps = expectedMbps,
+                        useTls = tlsMode,
                         networkInvalid = { networkChanged.get() },
+                        routeValidator = argoValidator,
                         onStage = { state ->
                             val span = 92 / families.size
                             val f = if (state.total == 0) 0.0 else state.current.toDouble() / state.total
-                            setStage(lease, "$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}")
+                            setStage(lease, "$family · ${state.name}${if (state.total > 0) " ${state.current}/${state.total}" else ""}${if (state.detail.isNotBlank()) " · ${state.detail}" else ""}")
                             updateProgress(lease, idx * span + (f * span).toInt())
                         },
                         log = { appendRunLog(lease, "  $it") }
                     )
                     if (!isCurrentRun(lease)) return@launch
-                    invalid = invalid || runResult.invalid; all[family] = runResult.ranked; asia[family] = runResult.asiaRanked; popCounts[family] = runResult.popCounts
+                    val metric = winnerMetric(winner, advancedValidation)
+                    all[family] = listOf(metric)
+                    asia[family] = listOf(metric)
+                    popCounts[family] = if (winner.colo.isBlank()) emptyMap() else mapOf(winner.colo to 1)
                 }
                 if (!isCurrentRun(lease)) return@launch
                 invalid = invalid || networkChanged.get(); updateProgress(lease, 100); setStage(lease, "完成"); appendRunLog(lease, if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
@@ -643,18 +627,64 @@ class MainActivity : Activity() {
         attachRunJob(lease, job)
         if (networkChanged.get()) cancelRunIfCurrent(lease)
     }
-    private fun selectCandidates(snapshot: AuthorizedHostSnapshot, family: String, lease: RunLease): List<IpPipeline.Candidate> =
-        CandidatePool.build(
-            snapshot,
-            importedIps,
-            family,
-            includeOfficialSamples = true,
-            snapshotSource = "测速域名DNS",
-            sampleSeed = lease.sampleSeed xor (family.hashCode().toLong() shl 32)
-        ).also {
-            appendRunLog(lease, "$family 候选 ${it.candidates.size}；导入有效 ${it.acceptedImported}/${it.importedCount}" +
-                "；拒绝私网/保留/无效 ${it.ignoredUnsafeOrNonPublic}；跨协议族 ${it.ignoredWrongFamily}${if (it.importedSampled) "；长列表已分散抽样" else ""}")
-        }.candidates.map { IpPipeline.Candidate(it.ip, it.source) }
+    private fun winnerMetric(winner: ReferenceScanner.Winner, routeRequired: Boolean): IpMetric {
+        val mbps = winner.realMbps
+        val speedProbe = ProbeEngine.ProbeResult(
+            ok = true,
+            family = winner.family,
+            targetIp = winner.ip,
+            actualRemoteAddress = winner.ip,
+            targetMatchesRemote = true,
+            remoteIsIpv6 = winner.family == "IPv6",
+            sni = winner.speedHost,
+            certVerified = winner.useTls,
+            httpCode = 200,
+            tcpMs = winner.tcpMs.toDouble(),
+            ttfbMs = winner.rttMs.toDouble(),
+            bytesDownloaded = winner.bytesDownloaded,
+            payloadMbps = mbps,
+            completeTransferMbps = mbps,
+            callTotalMbps = mbps,
+            colo = winner.colo,
+            loc = winner.dataCenter
+        )
+        val rttProbe = ProbeEngine.ProbeResult(
+            ok = true,
+            family = winner.family,
+            targetIp = winner.ip,
+            actualRemoteAddress = winner.ip,
+            targetMatchesRemote = true,
+            remoteIsIpv6 = winner.family == "IPv6",
+            tcpMs = winner.rttMs.toDouble(),
+            ttfbMs = winner.rttMs.toDouble()
+        )
+        return IpMetric(
+            ip = winner.ip,
+            family = winner.family,
+            source = winner.source,
+            route = winner.route,
+            routeValidationRequired = routeRequired,
+            pre = rttProbe,
+            micro = speedProbe,
+            full = listOf(speedProbe),
+            minCompleteMbps = mbps,
+            avgCompleteMbps = mbps,
+            maxCompleteMbps = mbps,
+            fullSuccessRatePct = 100.0,
+            variationPct = 0.0,
+            medianTtfbMs = winner.rttMs.toDouble(),
+            floorMbps = mbps,
+            primaryPop = winner.colo,
+            edgeScore = IpPipeline.popPriority(winner.colo),
+            referenceVerified = true,
+            peakKbps = winner.peakKbps,
+            referenceLatencyMs = winner.tcpMs,
+            dataCenter = winner.dataCenter,
+            scanRound = winner.round,
+            useTls = winner.useTls,
+            speedHost = winner.speedHost
+        )
+    }
     private fun appendRunLog(lease: RunLease, value: String) { if (isCurrentRun(lease)) appendLog(value) }
     private fun appendLog(value: String) {
         logQueue.add(value); if (flushing.compareAndSet(false, true)) logHandler.postDelayed({ flushLogs() }, 180)
@@ -675,8 +705,8 @@ class MainActivity : Activity() {
     // ------------------------------------------ results / history
     private fun buildResult() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(30), dp(20), dp(20)); setBackgroundColor(bg) }
-        result = root; root.addView(label("结果 · IP 原生排名", 22f, primary, true))
-        root.addView(label("点击复制裸 IP，只替换 VMess / VLESS 节点的 address/server。原端口、UUID、TLS SNI、WS Host/Path 全部保持不变。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
+        result = root; root.addView(label("结果 · CF 优选 IP", 22f, primary, true))
+        root.addView(label("点击复制 IP，只替换 VMess / VLESS 节点的 address/server。原端口、UUID、TLS SNI、WS Host/Path 全部保持不变。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(primaryButton("返回首页") { switchTo(home, "home"); refreshStatus() }, lp(12))
     }
@@ -684,25 +714,22 @@ class MainActivity : Activity() {
         results.removeAllViews(); if (invalid) results.addView(label("⚠ 网络在测试中变化，结果仅供参考。", 13f, warn, true))
         results.addView(panel {
             addView(label("使用方法", 13f, primary, true))
-            addView(label("address/server = 推荐 IP\n其他节点参数 = 保持原样\n本轮期望带宽 = $expectedMbps Mbps", 12f, secondary).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("address/server = 优选 IP\n其他节点参数 = 保持原样\n本轮目标带宽 = $expectedMbps Mbps", 12f, secondary).apply { setPadding(0, dp(6), 0, 0) })
             if (argoHost.isNotBlank()) addView(label("已启用高级复核：$argoHost:$argoPort · Path ${wsPath.ifBlank { "未填写" }}", 11f, good).apply { setPadding(0, dp(6), 0, 0) })
         }, lp(8))
         families.forEach { family ->
             val ranked = all[family].orEmpty()
             val usable = ranked.filter { it.isNodeUsable }
             val rejected = ranked.filterNot { it.isNodeUsable }
-            results.addView(label(when (strategy) { "亚洲狩猎" -> "$family · 亚洲狩猎"; "最大带宽" -> "$family · 最大带宽"; else -> "$family · 均衡排名" }, 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
-            if (strategy == "亚洲狩猎") {
-                results.addView(label("公开 trace：" + listOf("HKG", "NRT", "SIN", "ICN", "TPE").joinToString(" · ") { "$it ${pops[family]?.get(it) ?: 0}" }, 12f, secondary))
-                addMetricSection("推荐榜（稳定速度优先）", asia[family].orEmpty().filter { it.isNodeUsable }.take(20), !invalid, expectedMbps)
-            } else addMetricSection("可直接填入节点的 IP", usable.take(20), !invalid, expectedMbps)
+            results.addView(label("$family · 快速优选", 17f, accent, true).apply { setPadding(0, dp(18), 0, dp(7)) })
+            addMetricSection("首个达到目标带宽的 IP", usable.take(1), !invalid, expectedMbps)
             if (rejected.isNotEmpty()) addMetricSection("未复测 / 未通过（仅诊断）", rejected.take(12), false, expectedMbps)
         }; switchTo(result, "result")
     }
     private fun addMetricSection(title: String, metrics: List<IpMetric>, allowCopy: Boolean, expectedMbps: Int) {
         results.addView(label(title, 14f, primary, true).apply { setPadding(0, dp(14), 0, dp(6)) })
         val dnsChampionIndex = if (allowCopy) metrics.indexOfFirst { it.isDnsSyncEligible } else -1
-        if (metrics.isEmpty()) results.addView(label("（没有通过两轮 5 秒真实下载复测的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
+        if (metrics.isEmpty()) results.addView(label("（没有达到目标带宽的结果）", 12f, muted)) else metrics.forEachIndexed { index, metric ->
             results.addView(
                 metricCard(
                     index,
@@ -722,28 +749,19 @@ class MainActivity : Activity() {
         addView(label("$medal  ${metric.ip}${if (allowCopy) "  ⧉" else ""}", 15f, primary, true).apply {
             if (allowCopy) setOnClickListener { copy(metric.ip, "IP") }
         })
-        addView(label("${metric.family} · ${metric.source} · 5 秒复测 ${metric.full.size} 次", 11f, muted))
+        addView(label("${metric.family} · ${metric.source} · 第 ${metric.scanRound.coerceAtLeast(1)} 轮", 11f, muted))
         val route = metric.route
         if (metric.routeValidationRequired) {
             if (route?.ok == true) {
                 addView(label("高级节点复核：TLS/SNI/Host ✓ · trace HTTP ${route.traceHttpCode}" +
                     (if (route.wsPath.isNotEmpty()) " · WS 101 ✓" else "") , 11f, good, true))
             } else addView(label("高级节点复核失败：${route?.error ?: "未执行"}", 11f, bad))
-        } else addView(label("直接 IP 模式 · ${ProbeEngine.SPEED_HOST}:443 TLS 严格校验", 11f, good))
-        addView(label("平均 ${fmt(metric.avgCompleteMbps)} Mbps · 最低 ${fmt(metric.minCompleteMbps)} Mbps · 可靠下限 ${fmt(metric.floorMbps)} Mbps", 12f, secondary).apply { setPadding(0, dp(5), 0, 0) })
+        } else addView(label("${if (metric.useTls) "TLS 443 · 系统证书严格校验" else "非 TLS 80"} · ${metric.speedHost}", 11f, good))
+        addView(label("实测带宽 ${fmt(metric.avgCompleteMbps)} Mbps · 完整一秒峰值 ${metric.peakKbps} kB/s", 12f, secondary).apply { setPadding(0, dp(5), 0, 0) })
         val targetMet = metric.floorMbps >= expectedMbps
-        addView(label(if (targetMet) "达标 ✓ 可靠下限已达 $expectedMbps Mbps" else "未达目标：可靠下限低于 $expectedMbps Mbps", 11f, if (targetMet) good else warn, targetMet))
-        addView(label("成功率 ${fmt(metric.fullSuccessRatePct)}% · 波动 ${fmt(metric.variationPct)}% · TTFB ${if (metric.medianTtfbMs < 0) "n/a" else "${fmt(metric.medianTtfbMs)} ms"} · ${metric.stability}", 11f, secondary))
-        if (metric.primaryPop.isNotBlank()) addView(label("入口：${metric.primaryPop} · 亚洲评分 ${metric.edgeScore}${if (metric.popDrift) " · POP 漂移" else ""}", 11f, if (metric.edgeScore > 0) good else secondary, metric.edgeScore > 0))
-        when {
-            metric.pre?.ok == false -> addView(label("预检失败；未进入 Full，已按 0 计入。", 10.5f, warn))
-            metric.micro?.ok == false -> addView(label("1 秒快筛失败：${compactError(metric.micro?.error.orEmpty())}；已继续尝试其他候选。", 10.5f, warn))
-            metric.full.isEmpty() -> addView(label("未进入两轮 5 秒真实下载复测。", 10.5f, warn))
-            metric.full.any { !it.ok } -> {
-                val failure = metric.full.first { !it.ok }
-                addView(label("5 秒复测失败：${compactError(failure.error)}", 10.5f, warn))
-            }
-        }
+        addView(label(if (targetMet) "达标 ✓ 已达到 $expectedMbps Mbps" else "未达目标", 11f, if (targetMet) good else warn, targetMet))
+        addView(label("TCP 延迟 ${metric.referenceLatencyMs} ms · 三次 RTT 平均 ${if (metric.medianTtfbMs < 0) "n/a" else "${fmt(metric.medianTtfbMs)} ms"}", 11f, secondary))
+        if (metric.primaryPop.isNotBlank()) addView(label("数据中心：${metric.dataCenter.ifBlank { metric.primaryPop }} · ${metric.primaryPop}", 11f, good, true))
         if (allowCopy) {
             addView(primaryButton("复制 IP") { copy(metric.ip, "IP") }, lp(8))
             if (allowDns) addView(secondaryButton("解析到我的域名（DNS-only）") { showDnsSyncDialog(metric.ip) }, lp(8))
@@ -758,21 +776,17 @@ class MainActivity : Activity() {
     private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
         try {
             val usableMetrics = all.values.flatten().filter { it.isNodeUsable }
-            val list = if (invalid) emptyList() else when (strategy) {
-                "亚洲狩猎" -> IpPipeline.rankAsia(usableMetrics)
-                "最大带宽" -> IpPipeline.rankMaximum(usableMetrics)
-                else -> IpPipeline.rank(usableMetrics)
-            }
+            val list = if (invalid) emptyList() else usableMetrics.sortedByDescending { it.avgCompleteMbps }
             val winner = list.firstOrNull(); val net = NetEnv.detect(this)
             val target = winner?.floorMbps?.let { it >= expectedMbps } == true
             val mode = if (argoHost.isBlank()) "直接 IP 模式" else "高级复核 $argoHost:$argoPort · Path ${wsPath.ifBlank { "未填写" }}"
             val verdict = "$mode · 目标 $expectedMbps Mbps · " + when {
                 invalid -> "网络变化，结果不可用于节点"
                 winner == null -> "未找到可用 IP"
-                target -> "冠军可靠下限达标"
-                else -> "冠军可用，但可靠下限未达目标"
+                target -> "优选 IP 已达到目标"
+                else -> "优选 IP 未达目标"
             }
-            HistoryStore.save(filesDir, HistoryStore.HistoryEntry(System.currentTimeMillis(), System.currentTimeMillis(), strategy, families.joinToString("+"), net.label, net.vpnActive, invalid, net.wifiSsid, effectiveOperator(net), net.phoneModel, winner?.ip.orEmpty(), winner?.let { fmt(it.avgCompleteMbps) }.orEmpty(), verdict, list.take(50).mapIndexed { i, m ->
+            HistoryStore.save(filesDir, HistoryStore.HistoryEntry(System.currentTimeMillis(), System.currentTimeMillis(), "快速优选", families.joinToString("+"), net.label, net.vpnActive, invalid, net.wifiSsid, effectiveOperator(net), net.phoneModel, winner?.ip.orEmpty(), winner?.let { fmt(it.avgCompleteMbps) }.orEmpty(), verdict, list.take(50).mapIndexed { i, m ->
                 HistoryStore.ResultLine(i + 1, m.ip, fmt(m.avgCompleteMbps), fmt(m.minCompleteMbps), fmt(m.floorMbps), "${fmt(m.fullSuccessRatePct)}%", "${fmt(m.variationPct)}%", if (m.medianTtfbMs < 0) "" else fmt(m.medianTtfbMs), m.stability, false, m.primaryPop)
             }))
         } catch (_: Exception) { appendLog("历史保存失败") }

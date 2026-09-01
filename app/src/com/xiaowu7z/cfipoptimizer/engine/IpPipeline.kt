@@ -31,15 +31,27 @@ data class IpMetric(
     val floorMbps: Double = 0.0,
     val primaryPop: String = "",
     val popDrift: Boolean = false,
-    val edgeScore: Int = 0
+    val edgeScore: Int = 0,
+    val referenceVerified: Boolean = false,
+    val peakKbps: Int = 0,
+    val referenceLatencyMs: Int = 0,
+    val dataCenter: String = "",
+    val scanRound: Int = 0,
+    val useTls: Boolean = true,
+    val speedHost: String = ProbeEngine.SPEED_HOST
 ) {
     // 至少两次独立的 5 秒真实下载复测都成功，才允许复制到节点。
     val isNodeUsable: Boolean get() =
-        (!routeValidationRequired || route?.ok == true) &&
-            full.size >= 2 && full.all { it.ok } && fullSuccessRatePct >= 99.9
-    // DNS 写入影响范围更大，只允许已完成复测且可靠下限为正的候选。
+        if (referenceVerified) {
+            (!routeValidationRequired || route?.ok == true) && full.isNotEmpty() && full.all { it.ok }
+        } else {
+            (!routeValidationRequired || route?.ok == true) &&
+                full.size >= 2 && full.all { it.ok } && fullSuccessRatePct >= 99.9
+        }
+    // DNS 写入影响范围更大：旧流程仍要求两次复测；快速优选只接受
+    // 已通过参考流程全部门禁并达到目标的单一结果。
     val isDnsSyncEligible: Boolean get() =
-        isNodeUsable && full.size >= 2 && floorMbps > 0.0
+        isNodeUsable && (referenceVerified || full.size >= 2) && floorMbps > 0.0
     // Kept as a source-compatible alias for callers from the first 1.0.0
     // implementation.  The default product is now direct-IP ranking, while an
     // Argo hostname route check is an optional extra gate.

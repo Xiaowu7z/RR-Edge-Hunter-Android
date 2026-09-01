@@ -4,7 +4,7 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。默认不需要填写任何域名：应用先对官方网段候选做三次 TCP RTT 与 1 秒下载快筛，再把 `speed.cloudflare.com` 固定到入围 IP 的 `443` 端口，以严格 TLS 证书、SNI、Host、真实对端和 `CF-RAY` 校验执行两轮累计 5 秒真实下载复测。每轮由 5 个独立的 1 秒下载段合成，找到能直接填入节点且下载速度更高、更稳定的入口。
+**CF 优选IP** 是一款在当前 Android 设备和当前网络上运行的 Cloudflare 入口 IP 优选工具。默认不需要填写域名：每轮从在线维护网段中随机生成 100 个地址，以 50 并发对每个地址执行三次 RTT + `CF-RAY` 验证，保留延迟最低的 10 个，再逐个做最多 5 秒真实下载。测速只统计完整的一秒窗口，最后不足一秒的数据不计峰值；首个达到期望带宽的 IP 立即返回，否则自动换一批继续。
 
 优选结果是一个裸 IPv4 或 IPv6。把它填入 VMess / VLESS 等节点的 `address` 或 `server` 字段即可；节点原来的端口、UUID、协议、TLS SNI、HTTP Host、WS Path 等参数全部保持不变。
 
@@ -20,9 +20,9 @@
 
 ### Obtainium 自动更新
 
-[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/Xiaowu7z/RR-Edge-Hunter-Android)
+[🔄 **一键加入 Obtainium 自动更新**](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Afalse%2C%5C%22releaseDateAsVersion%5C%22%3Atrue%2C%5C%22versionDetection%5C%22%3Afalse%2C%5C%22apkFilterRegEx%5C%22%3A%5C%22%5ECF-IP-Optimizer%5C%5C%5C%5C.apk%24%5C%22%2C%5C%22invertAPKFilter%5C%22%3Afalse%2C%5C%22autoApkFilterByArch%5C%22%3Afalse%7D%22%7D)
 
-按钮改用 Obtainium 官方的 `obtainium://add/<仓库地址>` 简单深链，不再传递 JSON、正则表达式或百分号编码，因此避开部分手机出现的 URI 编码错误。打开后确认添加即可；仓库只有一个正式 APK，Obtainium 会自动选择 **CF 优选IP**。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
+按钮使用 Obtainium 官方的 `obtainium://app/<URL 编码 JSON>` 完整配置深链，已经替用户固定包名、GitHub 来源、正式 APK 文件、按 Release 日期识别更新，并关闭预发布版与 CPU 架构筛选；即使应用版本按要求继续保持 1.0.0，仓库重发正式 Release 后也能识别更新。打开后确认添加即可。若浏览器或系统没有唤起 Obtainium，请打开 Obtainium，点击“添加应用”，把下面的仓库地址粘贴到“来源 URL”：
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
@@ -36,32 +36,28 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 | --- | --- |
 | IP 协议 | IPv4 |
 | 期望带宽 | 100 Mbps |
-| 默认测速策略 | 亚洲狩猎 |
-| 可选策略 | 均衡 / 亚洲狩猎 / 最大带宽 |
-| 测速身份 | `speed.cloudflare.com:443` |
-| 候选来源 | Cloudflare 官方默认池；可叠加用户导入的任意安全公网 IP |
+| 测速流程 | 快速优选：100 IP → 三次 RTT → 最低延迟 10 个 → 首个达标即停 |
+| 连接方式 | TLS 443（默认、严格证书校验）/ 非 TLS 80 |
+| 测速地址 | 由公开维护接口动态下发；离线时使用缓存/官方备用 |
+| 候选来源 | `baipiao.eu.org` 公开维护池；可叠加用户导入的安全公网 IP |
 | 输出用途 | 只替换节点 `address/server` |
 
-### 三种测速策略
+### 唯一测速模式
 
-- **均衡**：从 20 个跨延迟分位候选中做 1 秒快筛，入围 IP 通过两轮累计 5 秒复测并达到目标后提前结束，速度与流量消耗兼顾。
-- **亚洲狩猎**：同样使用 20 个多样候选和“两轮累计 5 秒达标”早停；速度和稳定性优先，亚洲 POP 仅作同档加分。
-- **最大带宽**：不提前停止，先快筛低 RTT 主体和跨延迟分位组成的 20 个候选，再对最快候选做两轮累计 5 秒复测并确认最快 3 个；复测失败自动向下补位。
+界面不再让普通用户在“均衡 / 亚洲狩猎 / 最大带宽”之间猜测。所有扫描统一使用一条可解释的快速流程：100 个随机候选、三次严格 RTT/CF-RAY 验证、最低延迟 10 个串行下载、首个达到目标即停止。未达到目标会自动进入下一轮，直到找到结果或用户点击停止。
 
-三个策略均先从每族最多 100 个候选中进行三次 TCP connect 快筛，任一轮失败即淘汰，再让“低 RTT 主体 + 跨延迟分位”组成的 20 个候选进入 1 秒严格下载快筛，避免单一低延迟网段全部失败或漏掉更高吞吐线路。只有入围的 2–3 个候选进入两轮累计 5 秒复测；每轮使用 5 个独立的 1 秒严格下载段，避免单个超大响应在部分 Android 网络上断流后把所有速度记为零。最终推荐、复制 IP、DNS 同步和排名只采用累计 5 秒复测数据。
-
-界面流量为按目标带宽计算的计划值，不再把 HTTP 响应容量当成必然下载量。以亚洲狩猎、100 Mbps、单协议为例：常规计划约 **625 MB**；若首个快筛候选达标并通过两轮复测，约 **137.5 MB**。实际流量会随真实速度、失败时机和补位次数变化。
+每个下载候选最多测试 5 秒；只计算每个完整一秒窗口的速度并取峰值，所以小错误页和最后不足一秒的响应不会制造虚高。由于未达标会继续测试甚至换轮，应用不再展示虚假的“固定流量上限”。
 
 ## 工作方式
 
-1. 获取 `speed.cloudflare.com` 当前 DNS 种子，并加载 Cloudflare 官方 CIDR 的每轮有界轮转抽样。
-2. 如用户导入名单，将其中安全的公网字面量作为受限候选加入；私网、回环、链路本地和保留地址不会进入探测。
-3. 固定 `speed.cloudflare.com:443` 到每个候选 IP，保留系统证书、SNI、Host 和实际 TCP 对端验证。
-4. 对每族最多 100 个候选各做 3 次 TCP connect RTT 快筛；任一失败淘汰。Wi-Fi 并发最多 32，移动网络自动降到 16。
-5. 三种模式都选择低 RTT 主体与跨延迟分位共 20 个，避免纯延迟截断和单一网段垄断候选。
-6. 20 个候选各做约 1 秒严格下载快筛，只接受 2xx、严格 TLS、真实对端一致、有效 `CF-RAY` 且样本时长/大小合格的响应。
-7. 快筛入围 IP 再做两轮累计 5 秒真实下载；每轮由 5 个独立的 1 秒严格下载段合成。任一段失败会显示段号和原因，并从下一候选补位。
-8. 只有两轮累计 5 秒下载样本全部成功的 IP 才能复制或同步 DNS；最大带宽按两轮平均下载速度选最快，其他模式优先可靠下限与稳定性。
+1. 从 `https://www.baipiao.eu.org/cloudflare/` 获取 IPv4/IPv6 网段、动态测速地址与数据中心表，成功数据在本机缓存 6 小时。
+2. 每轮随机抽取最多 100 个网段：IPv4 保留前三段并随机最后一段；IPv6 保留前三个 hextet 并随机后五段。用户导入的安全公网 IP 会占用本轮一部分名额。
+3. 以 50 并发对每个候选连续验证三次。单次包含 TCP 连接、可选 TLS 和 `Host: cloudflare.com` 请求；任一次失败或缺少 `CF-RAY` 即淘汰。
+4. 按三次 TCP 延迟平均值升序，只保留前 10 个候选。
+5. 按延迟顺序逐个连接动态测速主机，固定真实 TCP 目标为候选 IP；TLS 模式保留系统证书与 SNI/Host 校验，非 TLS 模式使用 80 端口。
+6. 每个候选最多下载 5 秒，以 32 KiB 读取；每个完整一秒窗口计算一次 kB/s 峰值，最后不足一秒窗口不参与。
+7. 第一个达到 `期望 Mbps × 128 kB/s` 的 IP 成为结果；若启用了 Argo 高级复核，还必须通过原节点域名验证。
+8. 10 个候选均未达到目标时自动进入新一轮。复制 IP 和 Cloudflare A/AAAA DNS-only 同步只对达标结果开放。
 
 默认流程测量当前手机网络到 Cloudflare 入口的质量，不需要 VPS 源站 IP，也不要求 Argo 域名。
 
@@ -73,9 +69,9 @@ https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
 - TXT、CSV、TSV、JSON、Base64 文件；
 - HTTPS IP 订阅链接。
 
-导入 IP 不要求与 `speed.cloudflare.com` 当前 DNS 求交，也不要求预先属于 Cloudflare 官方 CIDR；私网、回环、链路本地、保留地址和错误协议族会被拒绝或忽略。外部公网候选只是受限输入，只有在 `speed.cloudflare.com:443` 上通过系统证书、SNI、Host、实际 TCP 对端、2xx、有效 `CF-RAY` 与两轮累计 5 秒真实下载复测后，才会出现在可复制和可同步 DNS 的推荐榜。CIDR 抽样、每族最多 100 个候选、导入每族最多 60 个、并发和真实下载流量均有限制。文件选择使用 Android 系统选择器，不申请读取全部存储空间权限。
+导入 IP 不要求与动态测速域名当前 DNS 求交，也不要求预先属于 Cloudflare 官方 CIDR；私网、回环、链路本地、保留地址和错误协议族会被拒绝或忽略。外部公网候选只有通过同样的三次 RTT/CF-RAY 与真实下载门禁后才可复制或同步 DNS。文件选择使用 Android 系统选择器，不申请读取全部存储空间权限。
 
-第三方非官方反代不会混入默认官方池。
+默认维护数据来自 [badafans/better-cloudflare-ip](https://github.com/badafans/better-cloudflare-ip) 所使用的公开接口。本项目只复现其公开描述与可观察的测速流程，代码为独立实现；上游仓库当前未声明开源许可证，因此没有复制或内嵌其源代码。
 
 ## 高级：Argo 兼容复核
 
@@ -104,8 +100,8 @@ DNS 同步是独立可选输出，不会改变 Argo 域名或节点的端口、U
 ## 安全与隐私
 
 - 应用只申请联网和网络状态权限。
-- 默认一键池仅来自 Cloudflare 官方网段；用户主动导入只接受安全公网字面量。探针不继承系统 HTTP 代理，外部候选未通过严格门禁时不可复制。
-- TLS 证书、SNI、Host 和实际远端验证始终启用。
+- 默认一键池使用公开维护接口，本机保留最近一次成功缓存；维护接口不可用且无缓存时回退 Cloudflare 官方网段。
+- TLS 模式始终保留系统证书、SNI、Host 和实际远端验证；非 TLS 80 模式必须由用户主动选择。
 - HTTPS 订阅限制公网目标、大小和跳转，并防护 DNS rebinding。
 - API Token 不进入日志、历史和导出；持久保存必须由用户主动选择并由 Android Keystore 加密。
 - 不提供端口扫描、漏洞探测、压力测试、任意 hosts/路由修改、系统代理配置或访问控制绕过。

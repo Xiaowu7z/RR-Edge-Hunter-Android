@@ -19,6 +19,8 @@ kotlin {
                 "com/xiaowu7z/cfipoptimizer/engine/TimingListener.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/ProbeEngine.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/IpPipeline.kt",
+                "com/xiaowu7z/cfipoptimizer/engine/MaintainedPool.kt",
+                "com/xiaowu7z/cfipoptimizer/engine/ReferenceScanner.kt",
                 "IpSourcesTest.kt",
                 "CfRangesCancellationTest.kt",
                 "AuthorizedHostTest.kt",
@@ -27,7 +29,8 @@ kotlin {
                 "FastFunnelTest.kt",
                 "SpeedWindowPolicyTest.kt",
                 "FixedDnsTest.kt",
-                "CloudflareDnsTest.kt"
+                "CloudflareDnsTest.kt",
+                "ReferenceScannerTest.kt"
             )
         }
     }
@@ -112,6 +115,14 @@ val cloudflareDnsTest by tasks.registering(JavaExec::class) {
     mainClass.set("CloudflareDnsTestKt")
 }
 
+val referenceScannerTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies maintained-feed parsing and reference-compatible round generation."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("ReferenceScannerTestKt")
+}
+
 tasks.named("check") {
     dependsOn(
         ipSourcesTest,
@@ -122,6 +133,7 @@ tasks.named("check") {
         fastFunnelTest,
         speedWindowPolicyTest,
         fixedDnsTest,
-        cloudflareDnsTest
+        cloudflareDnsTest,
+        referenceScannerTest
     )
 }

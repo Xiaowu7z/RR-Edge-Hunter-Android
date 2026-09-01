@@ -1,4 +1,5 @@
 import com.xiaowu7z.cfipoptimizer.engine.ProbeEngine
+import kotlin.math.abs
 
 fun main() {
     var passed = 0
@@ -72,6 +73,64 @@ fun main() {
     check("payload速率只按body时间", rates.payloadMbps == 80.0, rates.toString())
     check("complete速率包含连接时间", rates.completeTransferMbps == 64.0, rates.toString())
     check("callTotal速率包含完整调用时间", rates.callTotalMbps == 40.0, rates.toString())
+
+    fun successfulSegment(index: Int) = ProbeEngine.ProbeResult(
+        ok = true,
+        family = "IPv4",
+        targetIp = "104.16.0.1",
+        actualRemoteAddress = "104.16.0.1",
+        targetMatchesRemote = true,
+        certVerified = true,
+        httpCode = 200,
+        httpVersion = "http/1.1",
+        dnsMs = 10.0 + index,
+        tcpMs = 20.0 + index,
+        tlsMs = 30.0 + index,
+        ttfbMs = 40.0 + index,
+        bodyMs = 1_000.0,
+        totalMs = 1_250.0,
+        callTotalMs = 1_500.0,
+        bytesDownloaded = 10_000_000L,
+        bytesTarget = 64_000_000L,
+        payloadMbps = 80.0,
+        completeTransferMbps = 64.0,
+        callTotalMbps = 53.333333,
+        colo = "HKG",
+        events = "sample-$index"
+    )
+
+    val fiveSegments = (1..5).map(::successfulSegment)
+    val combined = ProbeEngine.combineSpeedSegments(fiveSegments, "104.16.0.1")
+    check("五个一秒成功段可合成一轮累计五秒复测", combined.ok, combined.toString())
+    check(
+        "累计五秒按总字节和总完整传输时间计算速度",
+        combined.bytesDownloaded == 50_000_000L && combined.bodyMs == 5_000.0 &&
+            combined.totalMs == 6_250.0 && abs(combined.completeTransferMbps - 64.0) < 0.0001,
+        combined.toString()
+    )
+    check(
+        "累计五秒保留严格TLS与真实对端证据",
+        combined.certVerified && combined.targetMatchesRemote && combined.colo == "HKG",
+        combined.toString()
+    )
+
+    val failedSecond = successfulSegment(2).copy(ok = false, error = "SocketTimeoutException")
+    val failedSeries = ProbeEngine.combineSpeedSegments(
+        listOf(successfulSegment(1), failedSecond),
+        "104.16.0.1"
+    )
+    check(
+        "任一下载段失败会让整轮失败并标明段号",
+        !failedSeries.ok && failedSeries.completeTransferMbps == 0.0 &&
+            failedSeries.error.contains("第 2/5 段失败") && failedSeries.error.contains("SocketTimeoutException"),
+        failedSeries.toString()
+    )
+    val incompleteSeries = ProbeEngine.combineSpeedSegments(fiveSegments.take(4), "104.16.0.1")
+    check(
+        "不足五段不能冒充累计五秒结果",
+        !incompleteSeries.ok && incompleteSeries.error.contains("仅完成 4/5 段"),
+        incompleteSeries.toString()
+    )
 
     println("SpeedWindowPolicyTest：PASS $passed / FAIL $failed")
     if (failed > 0) kotlin.system.exitProcess(1)

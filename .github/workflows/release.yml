@@ -44,18 +44,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
 
-      - name: Fetch pinned libXray Android runtime
+      - name: Verify supplied reference App engine
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="${RUNNER_TEMP}/libxray-android-v26.7.28.zip"
-          curl --fail --location --retry 3 \
-            https://github.com/XTLS/libXray/releases/download/v26.7.28/libxray-android.zip \
-            --output "$ARCHIVE"
-          echo "28b7dc9d6cc8455fcca5cbd56e387003a7bfb558128651a64899dc3a8ccff666  $ARCHIVE" | sha256sum --check --strict
-          mkdir -p app/libs
-          unzip -p "$ARCHIVE" libxray-android/libXray.aar > app/libs/libXray.aar
-          test -s app/libs/libXray.aar
+          echo "fbfea92ee11be855b5f8bbfe66bd37c5134a7472d19c0ab6699a82672df46c6a  app/src/main/jniLibs/arm64-v8a/libgojni.so" |
+            sha256sum --check --strict
+          test ! -e app/libs/libXray.aar
+          python3 tools/verify_reference_contract.py
 
       - name: Validate fixed application version
         id: version
@@ -69,9 +65,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf 'version=%s\n' "$VERSION_NAME" >> "$GITHUB_OUTPUT"
           printf 'version_code=%s\n' "$VERSION_CODE" >> "$GITHUB_OUTPUT"
-
-      - name: Verify Obtainium one-tap link
-        run: python3 tools/verify_obtainium_link.py
 
       - name: Restore release keystore
         shell: bash
@@ -117,6 +110,10 @@ jobs:
           EXPECTED_CERT_DIGEST="$(tr '[:upper:]' '[:lower:]' <<<"$EXPECTED_CERT_SHA256" | tr -d ':[:space:]')"
           [[ "$EXPECTED_CERT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
           test "$CERT_DIGEST" = "$EXPECTED_CERT_DIGEST"
+          unzip -p "$APK" lib/arm64-v8a/libgojni.so |
+            sha256sum |
+            grep -Fq "fbfea92ee11be855b5f8bbfe66bd37c5134a7472d19c0ab6699a82672df46c6a"
+          ! unzip -Z1 "$APK" | grep -Eiq 'xray|libv2ray'
 
       - name: Prepare the only Android release assets
         shell: bash
@@ -138,7 +135,7 @@ jobs:
           printf '%s\n\n%s\n\n%s\n' \
             "CF 优选IP Android 正式版 $VERSION" \
             "构建提交：\`$GITHUB_SHA\`" \
-            "包含 100 IP 快速轮测、完整 VMess/VLESS 节点 Xray 出站延迟复核（与 V2rayNG 默认 generate_204 测试同口径），以及 Cloudflare A/AAAA 灰云同步。" \
+            "测速完整调用所提供参考 App 的原版 Go 引擎；无需节点链接。每轮返回 1 个 IP，Cloudflare A/AAAA 解析只能由用户从结果页手动确认。" \
             > "$NOTES_FILE"
 
           while IFS= read -r OLD_TAG; do

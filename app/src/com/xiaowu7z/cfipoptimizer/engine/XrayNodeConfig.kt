@@ -24,11 +24,15 @@ data class XrayPingResult(
 
 /** Pure JSON helpers kept separate from the native bridge for deterministic tests. */
 object XrayNodeConfig {
+    // RR Edge Hunter pins libXray v26.7.28. That exact release uses Invoke
+    // API v1 and configPath for pingBatch; newer libXray main uses a different
+    // in-memory v2 contract and must not be mixed with the pinned AAR.
+    const val LIBXRAY_API_VERSION = 1
     const val DELAY_TEST_URL = "https://www.gstatic.com/generate_204"
     const val PING_TIMEOUT_SECONDS = 5
 
     fun convertRequest(shareLink: String): String = JSONObject()
-        .put("apiVersion", 1)
+        .put("apiVersion", LIBXRAY_API_VERSION)
         .put("method", "convertShareLinksToXrayJson")
         .put("payload", JSONObject().put("text", shareLink))
         .toString()
@@ -71,7 +75,7 @@ object XrayNodeConfig {
     }
 
     fun pingBatchRequest(configPath: String): String = JSONObject()
-        .put("apiVersion", 1)
+        .put("apiVersion", LIBXRAY_API_VERSION)
         .put("method", "pingBatch")
         .put(
             "payload",

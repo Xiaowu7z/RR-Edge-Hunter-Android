@@ -7,7 +7,12 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Locale
 
-/** Non-secret fields used for validation and for a safe UI summary. */
+/**
+ * Non-secret fields used for validation and for a safe UI summary.
+ *
+ * These values never rebuild or patch the Xray outbound. The native converter's
+ * complete config remains authoritative so implicit WS Host behavior is kept.
+ */
 data class NodeRouteTemplate(
     val protocol: String,
     val sni: String,

@@ -30,7 +30,19 @@ fun main() {
                             JSONObject()
                                 .put("network", "ws")
                                 .put("security", "tls")
-                                .put("wsSettings", JSONObject().put("path", "/secret-path"))
+                                .put(
+                                    "tlsSettings",
+                                    JSONObject().put("serverName", "tls.example.com")
+                                )
+                                .put(
+                                    "wsSettings",
+                                    JSONObject()
+                                        .put("path", "/secret-path")
+                                        .put(
+                                            "headers",
+                                            JSONObject().put("Host", "ws.example.com")
+                                        )
+                                )
                         )
                 )
             )
@@ -45,12 +57,43 @@ fun main() {
     checkThat(settings.getString("address") == "104.18.1.2", "candidate address was not substituted")
     checkThat(settings.getInt("port") == 2053, "port changed")
     checkThat(settings.getString("id").startsWith("12345678"), "UUID changed")
-    checkThat(outbound.getJSONObject("streamSettings").getJSONObject("wsSettings").getString("path") == "/secret-path", "WS path changed")
+    val stream = outbound.getJSONObject("streamSettings")
+    checkThat(stream.getJSONObject("tlsSettings").getString("serverName") == "tls.example.com", "TLS SNI changed")
+    checkThat(stream.getJSONObject("wsSettings").getString("path") == "/secret-path", "WS path changed")
+    checkThat(stream.getJSONObject("wsSettings").getJSONObject("headers").getString("Host") == "ws.example.com", "WS Host changed")
+
+    // NodeRouteTemplate contains only safe display metadata. Even when that
+    // summary has a fallback Host, it must never be injected into a converted
+    // outbound whose WS settings intentionally omit an explicit Host header.
+    val implicitHostResponse = JSONObject(converted)
+    implicitHostResponse
+        .getJSONObject("data")
+        .getJSONArray("outbounds")
+        .getJSONObject(0)
+        .getJSONObject("streamSettings")
+        .getJSONObject("wsSettings")
+        .remove("headers")
+    val implicitHostProfile = XrayNodeConfig.profileFromConvertResponse(route, implicitHostResponse.toString())
+    val implicitHostCandidate = JSONObject(XrayNodeConfig.configForCandidate(implicitHostProfile, "104.18.1.3"))
+    val implicitWs = implicitHostCandidate
+        .getJSONArray("outbounds")
+        .getJSONObject(0)
+        .getJSONObject("streamSettings")
+        .getJSONObject("wsSettings")
+    checkThat(!implicitWs.has("headers"), "summary Host was injected into the Xray outbound")
+
+    val convertRequest = JSONObject(XrayNodeConfig.convertRequest("vless://redacted"))
+    checkThat(convertRequest.getInt("apiVersion") == 1, "wrong pinned libXray API version")
+    checkThat(convertRequest.getString("method") == "convertShareLinksToXrayJson", "wrong conversion method")
 
     val request = JSONObject(XrayNodeConfig.pingBatchRequest("/private/cache/node.json"))
+    checkThat(request.getInt("apiVersion") == 1, "ping request is not compatible with libXray v26.7.28")
     checkThat(request.getString("method") == "pingBatch", "wrong native method")
     checkThat(request.getJSONObject("payload").getString("url") == "https://www.gstatic.com/generate_204", "not aligned with V2rayNG default")
     checkThat(request.getJSONObject("payload").getInt("timeout") == 5, "wrong node timeout")
+    val pingItem = request.getJSONObject("payload").getJSONArray("configs").getJSONObject(0)
+    checkThat(pingItem.getString("configPath") == "/private/cache/node.json", "pinned pingBatch config path was lost")
+    checkThat(!pingItem.has("xrayJson"), "newer incompatible libXray API leaked into the pinned request")
 
     val passed = XrayNodeConfig.pingResult("""{"success":true,"data":{"results":[{"success":true,"delay":186}]},"error":""}""")
     checkThat(passed.ok && passed.delayMs == 186L, "valid full-node delay was rejected")

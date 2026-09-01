@@ -22,6 +22,7 @@ kotlin {
                 "com/xiaowu7z/cfipoptimizer/engine/MaintainedPool.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/ReferenceScanner.kt",
                 "com/xiaowu7z/cfipoptimizer/engine/NodeRouteTemplate.kt",
+                "com/xiaowu7z/cfipoptimizer/engine/XrayNodeConfig.kt",
                 "IpSourcesTest.kt",
                 "CfRangesCancellationTest.kt",
                 "AuthorizedHostTest.kt",
@@ -32,7 +33,8 @@ kotlin {
                 "FixedDnsTest.kt",
                 "CloudflareDnsTest.kt",
                 "ReferenceScannerTest.kt",
-                "NodeRouteParserTest.kt"
+                "NodeRouteParserTest.kt",
+                "XrayNodeConfigTest.kt"
             )
         }
     }
@@ -134,6 +136,14 @@ val nodeRouteParserTest by tasks.registering(JavaExec::class) {
     mainClass.set("NodeRouteParserTestKt")
 }
 
+val xrayNodeConfigTest by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies full-node conversion, candidate substitution, and Xray ping parsing."
+    dependsOn(tasks.named("classes"))
+    classpath = logicRuntimeClasspath
+    mainClass.set("XrayNodeConfigTestKt")
+}
+
 tasks.named("check") {
     dependsOn(
         ipSourcesTest,
@@ -146,6 +156,7 @@ tasks.named("check") {
         fixedDnsTest,
         cloudflareDnsTest,
         referenceScannerTest,
-        nodeRouteParserTest
+        nodeRouteParserTest,
+        xrayNodeConfigTest
     )
 }

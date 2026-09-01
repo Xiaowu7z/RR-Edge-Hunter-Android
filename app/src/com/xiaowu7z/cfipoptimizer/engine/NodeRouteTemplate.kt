@@ -7,11 +7,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Locale
 
-/**
- * Non-secret routing fields required to prove that a candidate IP can carry an
- * existing VMess/VLESS WebSocket-over-TLS node. UUIDs and user-info are never
- * retained in this object.
- */
+/** Non-secret fields used for validation and for a safe UI summary. */
 data class NodeRouteTemplate(
     val protocol: String,
     val sni: String,

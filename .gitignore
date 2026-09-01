@@ -4,6 +4,7 @@ app/build/
 logic-tests/build/
 local.properties
 toolchain/
+app/libs/*.aar
 __pycache__/
 *.pyc
 

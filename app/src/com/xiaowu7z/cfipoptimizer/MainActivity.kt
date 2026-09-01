@@ -23,14 +23,13 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import com.xiaowu7z.cfipoptimizer.engine.AuthorizedHost
 import com.xiaowu7z.cfipoptimizer.engine.IpMetric
 import com.xiaowu7z.cfipoptimizer.engine.IpPipeline
 import com.xiaowu7z.cfipoptimizer.engine.MaintainedPool
-import com.xiaowu7z.cfipoptimizer.engine.NodeRouteParser
-import com.xiaowu7z.cfipoptimizer.engine.NodeRouteTemplate
 import com.xiaowu7z.cfipoptimizer.engine.ProbeEngine
 import com.xiaowu7z.cfipoptimizer.engine.ReferenceScanner
+import com.xiaowu7z.cfipoptimizer.engine.XrayNodeGate
+import com.xiaowu7z.cfipoptimizer.engine.XrayNodeProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,7 +101,7 @@ class MainActivity : Activity() {
     private var protocol = "IPv4"
     private var useTls = true
     private var operatorLabel = "自动"
-    private var nodeTemplate: NodeRouteTemplate? = null
+    private var nodeProfile: XrayNodeProfile? = null
     private var sessionCloudflareToken: CloudflareApiToken? = null
     private var importedIps: List<String> = emptyList()
     private var importDescription = "尚未导入"
@@ -120,6 +119,7 @@ class MainActivity : Activity() {
         window.navigationBarDividerColor = bg
         window.isNavigationBarContrastEnforced = false
         window.decorView.setBackgroundColor(bg)
+        XrayNodeGate.clearTemporaryConfigs(cacheDir)
         buildHome(); buildRun(); buildResult()
         switchTo(home, "home")
         refreshStatus()
@@ -194,7 +194,7 @@ class MainActivity : Activity() {
             addView(label("CF 优选IP", 25f, primary, true)); addView(label("RR Edge Hunter · Android 1.0.0", 12f, muted))
         })
         root.addView(brand)
-        root.addView(label("粘贴一个当前能用的 VMess/VLESS Argo 节点，再找出既有真实下载速度、又能通过该节点 TLS + WebSocket 路由握手的 Cloudflare 入口 IP。", 12f, secondary).apply { setPadding(0, dp(14), 0, dp(8)) })
+        root.addView(label("粘贴一个当前能用的 VMess/VLESS Argo 节点，再找出既有真实下载速度、又能通过完整 Xray 节点出站延迟测试的 Cloudflare 入口 IP。", 12f, secondary).apply { setPadding(0, dp(14), 0, dp(8)) })
         status = label("", 12f, muted); root.addView(status)
 
         root.addPanel(12) {
@@ -217,7 +217,7 @@ class MainActivity : Activity() {
             nodeLinkInput = input("粘贴完整 vmess:// 或 vless:// 分享链接", true)
             addView(nodeLinkInput)
             addView(secondaryButton("识别节点参数") { acceptNodeTemplate(true) }, lp(8))
-            nodeSummary = label("尚未识别节点；不会保存 UUID，只提取端口、SNI、Host 和 WS Path。", 11f, warn)
+            nodeSummary = label("尚未识别节点；完整配置仅留在当前页面内存，用于 V2rayNG 同口径复核。", 11f, warn)
             addView(nodeSummary, lp(8))
         }
         root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
@@ -263,8 +263,8 @@ class MainActivity : Activity() {
             addView(heading("安全边界"))
             addView(label("• 在线维护数据缓存 6 小时；更新失败使用上次缓存，再失败回退 Cloudflare 官方网段。", 12f, secondary))
             addView(label("• 外部候选与维护池候选都必须通过三次 RTT/CF-RAY 和真实下载测速。", 12f, secondary))
-            addView(label("• 达标候选还必须通过所粘贴节点的真实 TLS/SNI/Host 与 WebSocket 101 路由握手。", 12f, secondary))
-            addView(label("• 节点 UUID 不保存、不写日志；最终只复制裸 IP。DNS 同步必须在结果页二次确认。", 12f, secondary))
+            addView(label("• 达标候选还必须用完整 VMess/VLESS 配置通过 Xray generate_204 出站延迟测试。", 12f, secondary))
+            addView(label("• 节点链接不持久化、不写日志或历史；临时测试文件立即删除，最终只复制裸 IP。", 12f, secondary))
         }
     }
 
@@ -274,7 +274,7 @@ class MainActivity : Activity() {
         val info = NetEnv.detect(this)
         val pool = "在线维护池${if (importedIps.isNotEmpty()) " + 导入 ${importedIps.size}" else ""}"
         status.text = "${info.label} · 线路：${effectiveOperator(info)} · 候选：$pool"
-        protocolSummary.text = "$protocol · ${if (useTls) "TLS 443" else "非 TLS 80"} · ${nodeTemplate?.protocol ?: "节点待识别"}"
+        protocolSummary.text = "$protocol · ${if (useTls) "TLS 443" else "非 TLS 80"} · ${nodeProfile?.route?.protocol ?: "节点待识别"}"
     }
     private fun refreshImportStatus(error: String? = null) {
         if (!::importStatus.isInitialized) return
@@ -387,22 +387,22 @@ class MainActivity : Activity() {
     private fun acceptNodeTemplate(showToast: Boolean): Boolean {
         val raw = nodeLinkInput.text?.toString().orEmpty().trim()
         if (raw.isBlank()) {
-            if (nodeTemplate != null) return true
+            if (nodeProfile != null) return true
             if (showToast) Toast.makeText(this, "请先粘贴一个当前在 V2rayNG 能用的 VMess/VLESS Argo 节点", Toast.LENGTH_LONG).show()
             return false
         }
         return try {
-            val parsed = NodeRouteParser.parse(raw)
-            nodeTemplate = parsed
-            // Do not leave UUID/user-info in the view hierarchy after parsing.
+            val parsed = XrayNodeGate.recognize(raw)
+            nodeProfile = parsed
+            // Do not leave credentials in the view hierarchy after conversion.
             nodeLinkInput.text?.clear()
-            nodeSummary.text = "已识别：${parsed.safeSummary}；UUID 已丢弃"
+            nodeSummary.text = "已识别：${parsed.route.safeSummary}；完整配置仅在当前页面内存中"
             nodeSummary.setTextColor(good)
             refreshStatus()
-            if (showToast) Toast.makeText(this, "节点已识别，后续只验证非秘密路由参数", Toast.LENGTH_SHORT).show()
+            if (showToast) Toast.makeText(this, "节点已识别，将执行 V2rayNG 同口径完整出站测试", Toast.LENGTH_SHORT).show()
             true
         } catch (e: Exception) {
-            nodeTemplate = null
+            nodeProfile = null
             nodeSummary.text = e.message ?: "节点链接无法识别"
             nodeSummary.setTextColor(bad)
             if (showToast) Toast.makeText(this, nodeSummary.text, Toast.LENGTH_LONG).show()
@@ -525,13 +525,10 @@ class MainActivity : Activity() {
         if (expectedMbps == null || expectedMbps !in 1..2_000) {
             Toast.makeText(this, "期望带宽请填写 1–2000 Mbps", Toast.LENGTH_LONG).show(); return
         }
-        val node = nodeTemplate ?: run {
+        val profile = nodeProfile ?: run {
             Toast.makeText(this, "请先识别一个当前能用的 Argo 节点", Toast.LENGTH_LONG).show(); return
         }
-        val host = node.sni
-        val hostHeader = node.hostHeader
-        val wsPath = node.wsPath
-        val argoPort = node.port
+        val node = profile.route
         val tlsMode = useTls
         val families = when (protocol) { "IPv4" -> listOf("IPv4"); "IPv6" -> listOf("IPv6"); else -> listOf("IPv4", "IPv6") }.filterNot { it == "IPv6" && !network.ipv6Available }
         if (families.isEmpty()) { Toast.makeText(this, "所选协议族没有可用链路", Toast.LENGTH_LONG).show(); return }
@@ -551,29 +548,23 @@ class MainActivity : Activity() {
                 appendRunLog(lease, "=== 快速优选 / ${families.joinToString("+")} / ${effectiveOperator(network)} ===")
                 appendRunLog(lease, "流程：每轮 100 IP · 50 并发 × 3 次 RTT/CF-RAY · 最低延迟 10 个逐个下载")
                 appendRunLog(lease, "目标：$expectedMbps Mbps · ${if (tlsMode) "TLS 443（严格证书校验）" else "非 TLS 80"}")
-                appendRunLog(lease, "V2rayNG 节点复核：${node.protocol} · $host:$argoPort · WS Path 已识别")
+                appendRunLog(lease, "V2rayNG 同口径复核：${node.protocol} · 完整 Xray 出站 · generate_204")
                 setStage(lease, "加载在线维护 IP 池")
                 val maintained = MaintainedPool.load(filesDir) { appendRunLog(lease, it) }
                 if (!isCurrentRun(lease)) return@launch
                 appendRunLog(lease, "数据：${maintained.source} · IPv4 ${maintained.ipv4Ranges.size} 段 / IPv6 ${maintained.ipv6Ranges.size} 段")
                 appendRunLog(lease, "动态测速地址：${maintained.speedHost}${maintained.speedPath}")
-                setStage(lease, "检查节点 SNI / Host")
-                AuthorizedHost.snapshot(host) { appendRunLog(lease, it) }
-                if (hostHeader != host) AuthorizedHost.snapshot(hostHeader) { appendRunLog(lease, it) }
-                if (!isCurrentRun(lease)) return@launch
                 val argoValidator: suspend (String) -> ProbeEngine.ArgoRouteResult = { ip ->
-                    ProbeEngine.probeArgoRouteWithHost(
-                        targetIp = ip,
-                        sniHost = host,
-                        hostHeader = hostHeader,
-                        wsPath = wsPath,
-                        targetPort = argoPort,
-                        timeoutSec = 8
-                    ) {
-                        appendRunLog(lease, "  $it")
+                    appendRunLog(lease, "  Xray 节点出站复核 $ip")
+                    XrayNodeGate.verify(cacheDir, profile, ip).also { checked ->
+                        appendRunLog(
+                            lease,
+                            if (checked.ok) "  V2rayNG 同口径延迟通过：${checked.ttfbMs.toLong()} ms"
+                            else "  节点出站未通过：${compactError(checked.error)}"
+                        )
                     }
                 }
-                val all = LinkedHashMap<String, List<IpMetric>>(); val asia = LinkedHashMap<String, List<IpMetric>>(); val popCounts = LinkedHashMap<String, Map<String, Int>>()
+                val all = LinkedHashMap<String, List<IpMetric>>()
                 var invalid = false
                 families.forEachIndexed { idx, family ->
                     if (!isCurrentRun(lease)) return@launch
@@ -596,15 +587,13 @@ class MainActivity : Activity() {
                     if (!isCurrentRun(lease)) return@launch
                     val metric = winnerMetric(winner, true)
                     all[family] = listOf(metric)
-                    asia[family] = listOf(metric)
-                    popCounts[family] = if (winner.colo.isBlank()) emptyMap() else mapOf(winner.colo to 1)
                 }
                 if (!isCurrentRun(lease)) return@launch
                 invalid = invalid || networkChanged.get(); updateProgress(lease, 100); setStage(lease, "完成"); appendRunLog(lease, if (invalid) "=== 网络变化，本轮仅供参考 ===" else "=== 完成 ===")
-                saveHistory(all, families, invalid, host, wsPath, argoPort, expectedMbps)
+                saveHistory(all, families, invalid, expectedMbps)
                 if (releaseRun(lease)) postUiIfAlive {
                     if (isLatestRunOutcome(lease) && currentPage == "run") {
-                        showResults(all, asia, popCounts, families, invalid, host, wsPath, argoPort, expectedMbps)
+                        showResults(all, families, invalid, expectedMbps)
                     }
                 }
             } catch (e: CancellationException) {
@@ -712,16 +701,16 @@ class MainActivity : Activity() {
     private fun buildResult() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(30), dp(20), dp(20)); setBackgroundColor(bg) }
         result = root; root.addView(label("结果 · CF 优选 IP", 22f, primary, true))
-        root.addView(label("这里只显示已通过原节点 TLS/SNI/Host 与 WebSocket 101 复核的 IP。复制后只替换 address/server，其他参数全部保持不变。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
+        root.addView(label("这里只显示已用完整节点配置通过 Xray/V2rayNG 同口径延迟测试的 IP。复制后只替换 address/server，其他参数全部保持不变。", 11.5f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(primaryButton("返回首页") { switchTo(home, "home"); refreshStatus() }, lp(12))
     }
-    private fun showResults(all: Map<String, List<IpMetric>>, asia: Map<String, List<IpMetric>>, pops: Map<String, Map<String, Int>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
+    private fun showResults(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, expectedMbps: Int) {
         results.removeAllViews(); if (invalid) results.addView(label("⚠ 网络在测试中变化，结果仅供参考。", 13f, warn, true))
         results.addView(panel {
             addView(label("使用方法", 13f, primary, true))
             addView(label("address/server = 优选 IP\n其他节点参数 = 保持原样\n本轮目标带宽 = $expectedMbps Mbps", 12f, secondary).apply { setPadding(0, dp(6), 0, 0) })
-            addView(label("V2rayNG 节点路由已复核：$argoHost:$argoPort · TLS/SNI/Host + WS 101", 11f, good, true).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("节点已复核：完整 Xray 出站通过 · V2rayNG 默认 generate_204 同口径", 11f, good, true).apply { setPadding(0, dp(6), 0, 0) })
         }, lp(8))
         families.forEach { family ->
             val ranked = all[family].orEmpty()
@@ -759,9 +748,8 @@ class MainActivity : Activity() {
         val route = metric.route
         if (metric.routeValidationRequired) {
             if (route?.ok == true) {
-                addView(label("V2rayNG 节点路由：TLS/SNI/Host ✓ · trace HTTP ${route.traceHttpCode}" +
-                    (if (route.wsPath.isNotEmpty()) " · WS 101 ✓" else "") , 11f, good, true))
-            } else addView(label("高级节点复核失败：${route?.error ?: "未执行"}", 11f, bad))
+                addView(label("V2rayNG 同口径节点延迟：${route.ttfbMs.toLong()} ms ✓", 11f, good, true))
+            } else addView(label("完整节点出站失败：${route?.error ?: "未执行"}", 11f, bad))
         } else addView(label("${if (metric.useTls) "TLS 443 · 系统证书严格校验" else "非 TLS 80"} · ${metric.speedHost}", 11f, good))
         addView(label("实测带宽 ${fmt(metric.avgCompleteMbps)} Mbps · 完整一秒峰值 ${metric.peakKbps} kB/s", 12f, secondary).apply { setPadding(0, dp(5), 0, 0) })
         val targetMet = metric.floorMbps >= expectedMbps
@@ -779,13 +767,13 @@ class MainActivity : Activity() {
         .take(100)
         .ifBlank { "未知原因" }
     private fun fmt(value: Double) = "%.1f".format(value)
-    private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, argoHost: String, wsPath: String, argoPort: Int, expectedMbps: Int) {
+    private fun saveHistory(all: Map<String, List<IpMetric>>, families: List<String>, invalid: Boolean, expectedMbps: Int) {
         try {
             val usableMetrics = all.values.flatten().filter { it.isNodeUsable }
             val list = if (invalid) emptyList() else usableMetrics.sortedByDescending { it.avgCompleteMbps }
             val winner = list.firstOrNull(); val net = NetEnv.detect(this)
             val target = winner?.floorMbps?.let { it >= expectedMbps } == true
-            val mode = "V2rayNG 节点复核 $argoHost:$argoPort · TLS + WS 101"
+            val mode = "V2rayNG 同口径完整 Xray 节点复核"
             val verdict = "$mode · 目标 $expectedMbps Mbps · " + when {
                 invalid -> "网络变化，结果不可用于节点"
                 winner == null -> "未找到可用 IP"
@@ -1041,6 +1029,8 @@ class MainActivity : Activity() {
         }
         watcher?.invoke()
         logHandler.removeCallbacksAndMessages(null)
+        nodeProfile = null
+        XrayNodeGate.clearTemporaryConfigs(cacheDir)
         scope.cancel()
         super.onDestroy()
     }

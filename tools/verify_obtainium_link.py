@@ -18,19 +18,6 @@ EXPECTED_CONFIG = {
     "url": EXPECTED_REPOSITORY,
     "author": "Xiaowu7z",
     "name": "CF 优选IP",
-    "preferredApkIndex": 0,
-    "additionalSettings": json.dumps(
-        {
-            "includePrereleases": False,
-            "fallbackToOlderReleases": False,
-            "releaseDateAsVersion": True,
-            "versionDetection": False,
-            "apkFilterRegEx": r"^CF-IP-Optimizer\.apk$",
-            "invertAPKFilter": False,
-            "autoApkFilterByArch": False,
-        },
-        separators=(",", ":"),
-    ),
 }
 
 

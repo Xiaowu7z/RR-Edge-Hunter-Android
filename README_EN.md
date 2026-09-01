@@ -4,19 +4,19 @@
 
 [中文](README.md) · [English](README_EN.md)
 
-**CF 优选IP** is a local Android Cloudflare ingress-IP selector. First paste an existing VMess/VLESS WebSocket-over-TLS Argo node that already works in V2rayNG. The app extracts only its port, SNI, Host, and WS Path locally and immediately discards the UUID. It then generates 100 candidates per round, performs three checks with 50-way concurrency, and gives the 10 lowest-RTT candidates up to five seconds of real download traffic.
+**CF 优选IP** is a local Android Cloudflare ingress-IP selector. First paste an existing VMess/VLESS WebSocket-over-TLS Argo node that already works in V2rayNG. The app keeps its complete configuration only in the current screen session. It then generates 100 candidates per round, performs three checks with 50-way concurrency, and gives the 10 lowest-RTT candidates up to five seconds of real download traffic.
 
-After meeting the bandwidth target, a candidate must also pass strict TLS/SNI/Host and WebSocket `101` routing checks on the original node port. Only a candidate that passes both gates is displayed as a bare IPv4/IPv6 address. Replace only the node's `address/server`; keep every other field unchanged.
+After meeting the bandwidth target, the app changes only `address/server` in the full Xray outbound, preserves the protocol, UUID, port, TLS/SNI, WS Host/Path, and all other node fields, then requests V2rayNG's default delay URL, `https://www.gstatic.com/generate_204`, through that node. Only candidates that pass both the download and full-proxy gates are displayed.
 
 ## Install
 
 Current version: **1.0.0** (`com.xiaowu7z.cfipoptimizer`)
 
-[Download the latest universal APK](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk). No CPU-architecture choice is required.
+[Download the latest arm64-v8a APK](https://github.com/Xiaowu7z/RR-Edge-Hunter-Android/releases/latest/download/CF-IP-Optimizer.apk). It targets modern 64-bit Android phones and avoids a very large multi-ABI package containing four Xray runtimes.
 
 ### Obtainium
 
-[Add this app to Obtainium for automatic updates](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%2C%22preferredApkIndex%22%3A0%2C%22additionalSettings%22%3A%22%7B%5C%22includePrereleases%5C%22%3Afalse%2C%5C%22fallbackToOlderReleases%5C%22%3Afalse%2C%5C%22releaseDateAsVersion%5C%22%3Atrue%2C%5C%22versionDetection%5C%22%3Afalse%2C%5C%22apkFilterRegEx%5C%22%3A%5C%22%5ECF-IP-Optimizer%5C%5C%5C%5C.apk%24%5C%22%2C%5C%22invertAPKFilter%5C%22%3Afalse%2C%5C%22autoApkFilterByArch%5C%22%3Afalse%7D%22%7D). The official full-config link fixes the package ID, GitHub source, exact stable APK asset, release-date update detection, and disables prereleases and CPU filtering. This lets Obtainium notice a re-published stable Release even while the app version remains 1.0.0 as requested. Confirm once; no advanced choices are required. If Android does not hand the link to Obtainium, open Obtainium, tap **Add App**, and paste this repository address into **Source URL**:
+[Add this app to Obtainium for automatic updates](https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22com.xiaowu7z.cfipoptimizer%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FXiaowu7z%2FRR-Edge-Hunter-Android%22%2C%22author%22%3A%22Xiaowu7z%22%2C%22name%22%3A%22CF%20%E4%BC%98%E9%80%89IP%22%7D). This uses the same minimal official deep-link structure as RR Edge Atlas Android: package ID, GitHub source, author, and app name only. The stable Release contains one APK, so no asset filters or advanced choices are needed. If Android does not hand the link to Obtainium, open Obtainium, tap **Add App**, and paste this repository address into **Source URL**:
 
 ```text
 https://github.com/Xiaowu7z/RR-Edge-Hunter-Android
@@ -34,8 +34,8 @@ Leave the other options at their defaults. The repository retains only the lates
 | Transport | TLS 443 by default, with strict certificate validation; optional plain HTTP 80 |
 | Speed target | Dynamically supplied by the maintained endpoint, with cached/official fallback |
 | Candidate source | Public `baipiao.eu.org` maintained pool, optionally plus user-imported safe public IPs |
-| Node gate | Original port, TLS SNI, HTTP Host, and WS Path must all pass |
-| Output | Only a route-verified IP; replace `address/server` only |
+| Node gate | A complete VMess/VLESS Xray outbound must reach V2rayNG's default `generate_204` URL |
+| Output | Only an IP that passes the V2rayNG-equivalent proxy-delay test; replace `address/server` only |
 
 The UI exposes one understandable mode instead of asking users to choose among Balanced, Asia Hunt, and Maximum Bandwidth. A round that does not reach the target is followed by a new round until a result is found or the user stops the scan. Traffic therefore depends on real network results and is not presented with a misleading fixed upper bound.
 
@@ -47,10 +47,10 @@ The UI exposes one understandable mode instead of asking users to choose among B
 4. Sort by average TCP latency and retain the best 10.
 5. Pin the dynamically supplied speed host to each candidate in latency order. TLS mode retains platform certificate, SNI, Host, and actual-peer checks; non-TLS mode uses port 80.
 6. Download for at most five seconds per candidate. Peak kB/s is calculated only from complete one-second windows; a final partial window is ignored.
-7. After reaching `target Mbps × 128 kB/s`, pin the candidate to the original node port/SNI/Host/Path and require strict TLS plus a valid WebSocket `101` upgrade.
+7. After reaching `target Mbps × 128 kB/s`, change only `address/server` in the complete Xray node configuration and request V2rayNG's default `generate_204` delay URL through the VMess/VLESS outbound.
 8. Return the first candidate that passes both bandwidth and node-route gates; otherwise continue or start a fresh round. Copy and DNS synchronization are enabled only for that result.
 
-The app never tests the VPS origin IP, but it does require an existing node template so that the selected address is proven on the same route V2rayNG will use.
+The app never tests the VPS origin IP, but it does require an existing node so the candidate is proven with the same protocol, credentials, port, TLS, and transport settings V2rayNG will use.
 
 ## Custom candidate pools
 
@@ -60,9 +60,9 @@ Android's system document picker is used, so broad storage permission is not req
 
 ## V2rayNG node-usability gate
 
-Argo validation is now part of the main workflow. Paste a complete `vmess://` or `vless://` share link. WebSocket + TLS nodes on Cloudflare HTTPS ports `443/2053/2083/2087/2096/8443` are supported. The input is cleared after parsing; UUIDs and full links are not persisted or logged.
+Argo validation is now part of the main workflow. Paste a complete `vmess://` or `vless://` share link. WebSocket + TLS nodes on Cloudflare HTTPS ports `443/2053/2083/2087/2096/8443` are supported. The input is cleared after recognition; the credential-bearing full configuration remains only in current-screen memory and never enters preferences, history, logs, or exports.
 
-Every winner must preserve the original TLS certificate/SNI, HTTP Host, actual TCP peer, and WS Path, and receive a valid WebSocket `101` plus `Sec-WebSocket-Accept`. The output remains a bare IP and no other node field is changed.
+The APK uses a pinned official XTLS/libXray runtime to replace only the candidate address, start the complete VMess/VLESS outbound, and request `https://www.gstatic.com/generate_204`. The private-cache configuration file is deleted immediately after each call. This verifies real proxy usability rather than only TCP, TLS, or WebSocket reachability; the output remains a bare IP.
 
 ## Optional Cloudflare DNS synchronization
 
@@ -89,11 +89,11 @@ DNS synchronization is an optional output and does not alter the Argo hostname o
 - API tokens never enter logs, history, or exports; persistent storage is explicit and Keystore-backed.
 - The app does not provide port scanning, vulnerability testing, stress testing, arbitrary hosts/route changes, proxy configuration, or access-control bypass.
 
-See [SECURITY.md](SECURITY.md) and [NOTICE.md](NOTICE.md).
+See [SECURITY.md](SECURITY.md), [NOTICE.md](NOTICE.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Build
 
-JDK 17 and Android SDK 34 are required:
+JDK 17 and Android SDK 34 are required. Place the pinned `libXray.aar` under `app/libs/` before a local build; CI downloads v26.7.28 from the official release and verifies its SHA-256:
 
 ```bash
 ./gradlew :logic-tests:check :app:lintDebug :app:assembleDebug

@@ -4,11 +4,11 @@
 
 ## 测速边界
 
-- 主流程要求用户粘贴一个自己已有且获授权的 VMess/VLESS WS+TLS 节点。应用只保留非秘密路由字段；完整链接与 UUID 在解析后立即丢弃，不进入日志或历史。
+- 主流程要求用户粘贴一个自己已有且获授权的 VMess/VLESS WS+TLS 节点。完整配置（含 UUID 等凭据）只保留在当前页面进程内存；输入框识别后清空，配置不进入偏好设置、日志、历史、导出或错误文本。
 - 导入 IP 不必与动态测速域名当前 DNS 求交，也不要求预先属于 Cloudflare 官方 CIDR；非公网、私网、回环、链路本地、保留地址和错误协议族会被拒绝。
 - 每轮最多 100 个候选、50 并发预检、延迟前 10 个逐个最多下载 5 秒。未达标会进入下一轮，因此总轮数与总流量由用户停止操作和实际网络结果决定。
 - TLS 443 模式保留系统证书、SNI、Host 与实际 TCP 对端验证；非 TLS 80 必须由用户显式选择。探针不继承系统 HTTP 代理。
-- 达标候选必须在原节点端口通过严格 TLS/SNI/Host、实际对端和 WebSocket 101 复核。最终仍只输出裸 IP，节点原端口、UUID、SNI、Host 与 Path 不变。
+- 达标候选必须只替换完整 Xray 出站中的 `address/server`，并通过该 VMess/VLESS 节点请求 V2rayNG 默认 `generate_204` 地址。临时 Xray 配置位于应用私有缓存，单次调用后立即删除；最终仍只输出裸 IP，其他节点字段不变。
 
 ## 导入与本地数据
 
@@ -38,4 +38,4 @@ DNS 写入默认关闭，必须由用户在结果页主动开启：
 
 ---
 
-The Android scan uses a cached public maintained pool and a dynamic speed target, then requires route validation against a locally parsed VMess/VLESS WS+TLS node template. Full node links and UUIDs are discarded after parsing. DNS synchronization remains optional and explicit.
+The Android scan uses a cached public maintained pool and a dynamic speed target, then requires a complete VMess/VLESS Xray outbound to reach V2rayNG's default delay URL after changing only the candidate address. Credential-bearing configuration remains in current-screen memory only; per-test private-cache files are deleted immediately. DNS synchronization remains optional and explicit.

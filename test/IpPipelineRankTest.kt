@@ -46,6 +46,10 @@ fun main() {
         !direct.copy(floorMbps = 0.0).isDnsSyncEligible
     )
     check(
+        "快速优选达标结果可作为 DNS 冠军",
+        direct.copy(referenceVerified = true, full = direct.full.take(1)).isDnsSyncEligible
+    )
+    check(
         "含失败轮次的可复制结果不得触发 DNS 写入",
         !direct.copy(
             fullSuccessRatePct = 66.7,

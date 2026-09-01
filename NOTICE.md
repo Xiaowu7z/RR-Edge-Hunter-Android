@@ -2,7 +2,9 @@
 
 RR Edge Hunter Android（应用名：CF 优选IP）是独立第三方 Cloudflare 入口 IP 测量工具，与 Cloudflare, Inc.、Google 或 Android 平台不存在隶属、合作、赞助、认证或背书关系。相关名称和商标归其权利人所有。
 
-默认测量固定使用 Cloudflare 公共测速主机 `speed.cloudflare.com:443`，候选限定在 Cloudflare 官方公布网段及用户导入后通过同一官方范围校验的地址。测试结果仅代表当前设备、网络出口、运营商和时间，不构成线路质量保证。
+默认测量使用公开维护接口动态提供的候选网段、测速地址和数据中心表，接口不可用时采用本机缓存或 Cloudflare 官方备用网段。用户导入的安全公网 IP 也必须通过同样的实时连通与下载门禁。测试结果仅代表当前设备、网络出口、运营商和时间，不构成线路质量保证。
+
+默认维护接口与可观察测速流程参考 [badafans/better-cloudflare-ip](https://github.com/badafans/better-cloudflare-ip)。本项目为独立实现；该上游仓库目前没有声明开源许可证，因此本项目不复制、不修改也不分发其源代码。维护接口属于第三方服务，其可用性、内容与使用条件可能变化。
 
 优选出的裸 IP 只用于替换节点的 `address/server`。节点端口、UUID、协议、SNI、Host 与 WS Path 应保持原配置；高级 Argo 复核仅用于用户主动选择的额外兼容验证。
 

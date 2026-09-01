@@ -66,6 +66,7 @@ object IpPipeline {
     private const val SPEED_TIMEOUT_SECONDS = 10
     const val QUICK_SAMPLE_MILLIS = 1_000L
     const val FULL_SAMPLE_MILLIS = 5_000L
+    const val FULL_SAMPLE_SEGMENTS = 5
 
     /**
      * microLimit 表示延迟预筛后进入真实下载的候选数；finalLimit 表示复测数。
@@ -304,11 +305,6 @@ object IpPipeline {
             maximum = !params.earlyStop,
             sampleMillis = QUICK_SAMPLE_MILLIS
         )
-        val fullRequestBytes = ProbeEngine.speedRequestBytes(
-            expectedMbps,
-            maximum = !params.earlyStop,
-            sampleMillis = FULL_SAMPLE_MILLIS
-        )
         val microResults = LinkedHashMap<Candidate, ProbeEngine.ProbeResult>()
         val fullSamples = LinkedHashMap<Candidate, MutableList<ProbeEngine.ProbeResult>>()
 
@@ -333,8 +329,20 @@ object IpPipeline {
         suspend fun quickSample(candidate: Candidate) =
             sample(candidate, quickRequestBytes, QUICK_SAMPLE_MILLIS)
 
-        suspend fun fullSample(candidate: Candidate) =
-            sample(candidate, fullRequestBytes, FULL_SAMPLE_MILLIS)
+        suspend fun fullSample(candidate: Candidate): ProbeEngine.ProbeResult {
+            coroutineContext.ensureActive()
+            if (checkNetwork()) return failed(candidate.ip, "网络变化")
+            return ProbeEngine.probeSpeedSeries(
+                targetIp = candidate.ip,
+                requestedBytesPerSegment = quickRequestBytes,
+                segmentCount = FULL_SAMPLE_SEGMENTS,
+                segmentMillis = QUICK_SAMPLE_MILLIS,
+                timeoutSec = SPEED_TIMEOUT_SECONDS,
+                testHost = ProbeEngine.SPEED_HOST,
+                targetPort = 443,
+                log = log
+            )
+        }
 
         var earlyWinner: Candidate? = null
         onStage(Stage("1 秒候选快筛", 0, speedCandidates.size))

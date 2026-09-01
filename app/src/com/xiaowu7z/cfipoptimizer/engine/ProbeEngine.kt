@@ -193,10 +193,9 @@ object ProbeEngine {
     }
 
     /**
-     * 固定时间窗下载测速所需的响应容量。1 秒快筛最低准备 64 MB；
-     * 5 秒复测使用 Cloudflare 官方测速引擎当前采用的最大 250 MB 档，
-     * 尽量让高速线路跑满窗口。读取端会在时间窗到达后主动关闭，不会
-     * 固定下载完整响应；若超高速线路提前完整下载 250 MB，也属于有效实测。
+     * 固定时间窗下载测速所需的响应容量。按用户目标带宽和窗口长度准备
+     * 约一秒余量，最低 64 MB、最高 250 MB；不再把所有五秒复测一律
+     * 提升到 250 MB。读取端在窗口到达后主动关闭，不要求下载完整响应。
      * [maximum] 保留用于兼容 1.0.0 内部调用。
      */
     @Suppress("UNUSED_PARAMETER")
@@ -208,8 +207,7 @@ object ProbeEngine {
         val boundedMbps = expectedMbps.coerceIn(1, 2_000).toLong()
         val boundedWindow = sampleMillis.coerceIn(800L, 5_000L)
         val requested = boundedMbps * 125_000L * (boundedWindow + 1_000L) / 1_000L
-        val floor = if (boundedWindow >= 5_000L) 250_000_000L else 64_000_000L
-        return maxOf(floor, requested).coerceAtMost(250_000_000L)
+        return maxOf(64_000_000L, requested).coerceAtMost(250_000_000L)
     }
 
     data class SpeedRates(
@@ -504,6 +502,133 @@ object ProbeEngine {
             }
         }
         return result ?: ProbeResult(ok = false, error = "no result", targetIp = targetIp)
+    }
+
+    /**
+     * 将五秒确认拆成多个独立的一秒真实下载段。这样既保留累计五秒的
+     * 吞吐证据，也避免部分 Android 网络栈或边缘入口在单个超大响应上
+     * 提前断流后，让所有模式统一得到 0 Mbps。每一段仍执行完整的 TLS、
+     * SNI、实际 TCP 对端、2xx 与 CF-RAY 门禁；任一段失败则整轮失败。
+     */
+    suspend fun probeSpeedSeries(
+        targetIp: String,
+        requestedBytesPerSegment: Long,
+        segmentCount: Int = 5,
+        segmentMillis: Long = 1_000L,
+        timeoutSec: Int = 10,
+        testHost: String = SPEED_HOST,
+        targetPort: Int = 443,
+        log: (String) -> Unit = {}
+    ): ProbeResult {
+        val count = segmentCount.coerceIn(1, 10)
+        val samples = ArrayList<ProbeResult>(count)
+        repeat(count) { index ->
+            val sample = probeSpeedWindow(
+                targetIp = targetIp,
+                requestedBytes = requestedBytesPerSegment,
+                sampleMillis = segmentMillis,
+                timeoutSec = timeoutSec,
+                testHost = testHost,
+                targetPort = targetPort,
+                log = log
+            )
+            samples.add(sample)
+            if (!sample.ok) {
+                log(">>> $targetIp 五秒复测第 ${index + 1}/$count 段失败：${sample.error.take(100)}")
+                return combineSpeedSegments(samples, targetIp, count)
+            }
+        }
+        return combineSpeedSegments(samples, targetIp, count)
+    }
+
+    /** Pure aggregation policy for deterministic regression tests. */
+    fun combineSpeedSegments(
+        samples: List<ProbeResult>,
+        targetIp: String,
+        requiredSegments: Int = 5
+    ): ProbeResult {
+        val required = requiredSegments.coerceIn(1, 10)
+        if (samples.size < required) {
+            val failure = samples.firstOrNull { !it.ok }
+            val failedAt = samples.indexOfFirst { !it.ok }.takeIf { it >= 0 }?.plus(1)
+            return (failure ?: samples.lastOrNull() ?: ProbeResult(targetIp = targetIp, ok = false)).copy(
+                ok = false,
+                error = if (failure != null) {
+                    "第 ${failedAt ?: samples.size}/$required 段失败：${failure.error.ifBlank { "未知错误" }}"
+                } else {
+                    "五秒复测不完整：仅完成 ${samples.size}/$required 段"
+                },
+                targetIp = targetIp,
+                payloadMbps = 0.0,
+                completeTransferMbps = 0.0,
+                callTotalMbps = 0.0
+            )
+        }
+        val accepted = samples.take(required)
+        val failedIndex = accepted.indexOfFirst { !it.ok }
+        if (failedIndex >= 0) {
+            val failure = accepted[failedIndex]
+            return failure.copy(
+                ok = false,
+                error = "第 ${failedIndex + 1}/$required 段失败：${failure.error.ifBlank { "未知错误" }}",
+                targetIp = targetIp,
+                payloadMbps = 0.0,
+                completeTransferMbps = 0.0,
+                callTotalMbps = 0.0
+            )
+        }
+
+        fun averageOf(selector: (ProbeResult) -> Double): Double {
+            val values = accepted.map(selector).filter { it >= 0.0 && it.isFinite() }
+            return if (values.isEmpty()) -1.0 else values.average()
+        }
+        fun dominant(values: List<String>): String = values
+            .filter { it.isNotBlank() }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .firstOrNull()?.key.orEmpty()
+
+        val downloaded = accepted.sumOf { it.bytesDownloaded }
+        val target = accepted.sumOf { it.bytesTarget }
+        val bodyMs = accepted.sumOf { it.bodyMs.coerceAtLeast(0.0) }
+        val completeMs = accepted.sumOf { it.totalMs.coerceAtLeast(it.bodyMs).coerceAtLeast(0.0) }
+        val callMs = accepted.sumOf { it.callTotalMs.coerceAtLeast(it.totalMs).coerceAtLeast(0.0) }
+        val rates = calculateSpeedRates(downloaded, bodyMs, completeMs, callMs)
+        val first = accepted.first()
+        val last = accepted.last()
+        return first.copy(
+            ok = true,
+            error = "",
+            family = first.family,
+            targetIp = targetIp,
+            actualRemoteAddress = first.actualRemoteAddress,
+            targetMatchesRemote = accepted.all { it.targetMatchesRemote },
+            remoteIsIpv6 = first.remoteIsIpv6,
+            sni = first.sni,
+            certHostname = first.certHostname,
+            certVerified = accepted.all { it.certVerified },
+            httpCode = last.httpCode,
+            httpVersion = last.httpVersion,
+            dnsMs = averageOf { it.dnsMs },
+            tcpMs = averageOf { it.tcpMs },
+            tlsMs = averageOf { it.tlsMs },
+            ttfbMs = averageOf { it.ttfbMs },
+            bodyMs = bodyMs,
+            totalMs = completeMs,
+            callTotalMs = callMs,
+            bytesDownloaded = downloaded,
+            bytesTarget = target,
+            payloadMbps = rates.payloadMbps,
+            completeTransferMbps = rates.completeTransferMbps,
+            callTotalMbps = rates.callTotalMbps,
+            colo = dominant(accepted.map { it.colo.uppercase(Locale.ROOT) }),
+            loc = dominant(accepted.map { it.loc.uppercase(Locale.ROOT) }),
+            events = accepted.mapIndexed { index, sample ->
+                "segment ${index + 1}/$required\n${sample.events}"
+            }.joinToString("\n")
+        )
     }
 
     /**

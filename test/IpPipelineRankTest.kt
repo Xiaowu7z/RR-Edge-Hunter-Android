@@ -69,9 +69,10 @@ fun main() {
     val normalBytes = ProbeEngine.speedRequestBytes(100, maximum = false, sampleMillis = IpPipeline.FULL_SAMPLE_MILLIS)
     val maximumBytes = ProbeEngine.speedRequestBytes(100, maximum = true, sampleMillis = IpPipeline.FULL_SAMPLE_MILLIS)
     check(
-        "5秒复测容量大于1秒快筛且三个模式一致",
-        maximumBytes == normalBytes && normalBytes == 250_000_000L && normalBytes > quickBytes
+        "五秒请求容量按目标带宽计算且三个模式一致",
+        maximumBytes == normalBytes && normalBytes == 75_000_000L && normalBytes > quickBytes
     )
+    check("每轮累计五秒复测由五个独立一秒段组成", IpPipeline.FULL_SAMPLE_SEGMENTS == 5)
     check("CF-RAY 能解析实际 POP", ProbeEngine.edgeColo("abc123-HKG") == "HKG")
     check("无效 CF-RAY 不产生 POP", ProbeEngine.edgeColo("invalid") == "")
     check(

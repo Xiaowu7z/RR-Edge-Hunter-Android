@@ -209,7 +209,7 @@ class MainActivity : Activity() {
                 setSingleLine(true); inputType = InputType.TYPE_CLASS_NUMBER; setText("100")
             }
             addView(expectedBandwidthInput)
-            addView(label("20 个多样候选先做 1 秒快筛，入围 IP 再做两轮 5 秒真实复测；最终排名、复制与 DNS 解析只认 5 秒复测。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
+            addView(label("20 个多样候选先做 1 秒快筛，入围 IP 再做两轮累计 5 秒真实复测；每轮由 5 个独立下载段合成，最终排名、复制与 DNS 只认复测结果。", 11f, muted).apply { setPadding(0, dp(6), 0, 0) })
             addView(label("连接验证：TLS 严格校验 ✓ · 公开测速端口 443", 11.5f, good, true).apply { setPadding(0, dp(12), 0, 0) })
         }
         root.addView(primaryButton("开始扫描 Cloudflare 优选 IP") { preflightAndStart() }, lp(16))
@@ -739,7 +739,10 @@ class MainActivity : Activity() {
             metric.pre?.ok == false -> addView(label("预检失败；未进入 Full，已按 0 计入。", 10.5f, warn))
             metric.micro?.ok == false -> addView(label("1 秒快筛失败：${compactError(metric.micro?.error.orEmpty())}；已继续尝试其他候选。", 10.5f, warn))
             metric.full.isEmpty() -> addView(label("未进入两轮 5 秒真实下载复测。", 10.5f, warn))
-            metric.full.any { !it.ok } -> addView(label("5 秒复测含失败样本，不作为可用节点推荐。", 10.5f, warn))
+            metric.full.any { !it.ok } -> {
+                val failure = metric.full.first { !it.ok }
+                addView(label("5 秒复测失败：${compactError(failure.error)}", 10.5f, warn))
+            }
         }
         if (allowCopy) {
             addView(primaryButton("复制 IP") { copy(metric.ip, "IP") }, lp(8))

@@ -30,7 +30,7 @@ fun main() {
         "启用高级复核后必须有通过的路由结果",
         !direct.copy(routeValidationRequired = true).isNodeUsable
     )
-    check("连续两次真实下载成功才允许作为 DNS 冠军", direct.isDnsSyncEligible)
+    check("两轮5秒真实下载成功才允许作为 DNS 冠军", direct.isDnsSyncEligible)
     check(
         "不足两次复测不得作为 DNS 冠军",
         !direct.copy(full = direct.full.take(1)).isDnsSyncEligible
@@ -65,23 +65,26 @@ fun main() {
         IpPipeline.BALANCED.microLimit == 20 && IpPipeline.ASIA_HUNT.microLimit == 20 &&
             IpPipeline.MAX_BANDWIDTH.microLimit == 20
     )
-    val normalBytes = ProbeEngine.speedRequestBytes(100, maximum = false)
-    val maximumBytes = ProbeEngine.speedRequestBytes(100, maximum = true)
+    val quickBytes = ProbeEngine.speedRequestBytes(100, maximum = false, sampleMillis = IpPipeline.QUICK_SAMPLE_MILLIS)
+    val normalBytes = ProbeEngine.speedRequestBytes(100, maximum = false, sampleMillis = IpPipeline.FULL_SAMPLE_MILLIS)
+    val maximumBytes = ProbeEngine.speedRequestBytes(100, maximum = true, sampleMillis = IpPipeline.FULL_SAMPLE_MILLIS)
     check(
-        "三个模式使用相同的稳健有界下载容量",
-        maximumBytes == normalBytes && normalBytes >= 64_000_000L && maximumBytes <= 256_000_000L
+        "5秒复测容量大于1秒快筛且三个模式一致",
+        maximumBytes == normalBytes && normalBytes == 250_000_000L && normalBytes > quickBytes
     )
     check("CF-RAY 能解析实际 POP", ProbeEngine.edgeColo("abc123-HKG") == "HKG")
     check("无效 CF-RAY 不产生 POP", ProbeEngine.edgeColo("invalid") == "")
     check(
-        "均衡与最大带宽最坏流量上限一致且仍有界",
-        IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) ==
-            IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.BALANCED, 100)
+        "亚洲狩猎100M常规计划流量不是响应容量虚高值",
+        IpPipeline.estimateTraffic(100, IpPipeline.ASIA_HUNT, 100).plannedMb == 625.0
     )
     check(
-        "流量上限覆盖所有入围候选都需要二测的最坏情况",
-        IpPipeline.estimateTrafficUpperBoundMb(100, IpPipeline.MAX_BANDWIDTH, 100) ==
-            ProbeEngine.speedRequestBytes(100, maximum = true) * 40 / 1_000_000.0
+        "亚洲狩猎首个候选达标时约138MB",
+        IpPipeline.estimateTraffic(100, IpPipeline.ASIA_HUNT, 100).earlyStopMb == 137.5
+    )
+    check(
+        "最大带宽没有早停估算",
+        IpPipeline.estimateTraffic(100, IpPipeline.MAX_BANDWIDTH, 100).earlyStopMb == null
     )
 
     val highAverage = metric("104.16.0.20", "LAX", floor = 45.0, avg = 110.0)
